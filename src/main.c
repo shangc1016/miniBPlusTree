@@ -54,7 +54,7 @@ typedef struct {
 // do_meta_command 现在还是一个wrapper，为后面扩展留出空间
 MEtaCommandResult do_meta_command(InputBuffer *input_buffer) {
   if (strcmp(input_buffer->buffer, ".exit") == 0) {
-    return META_COMMAND_SUCCESS;
+    exit(EXIT_SUCCESS);
   } else {
     return META_COMMAND_UNRECOGNIZED_COMMAND;
   }
@@ -100,6 +100,7 @@ int main(int argc, char *argv[]) {
           continue;
         case (META_COMMAND_UNRECOGNIZED_COMMAND):
           printf("Unrecognized command '%s'.\n", input_buffer->buffer);
+          continue;
       }
     }
     // statement-commands
