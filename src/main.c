@@ -51,6 +51,7 @@ typedef struct {
 } Statement;
 
 // 得到meta-commands的类型，'.exit'...
+// do_meta_command 现在还是一个wrapper，为后面扩展留出空间
 MEtaCommandResult do_meta_command(InputBuffer *input_buffer) {
   if (strcmp(input_buffer->buffer, ".exit") == 0) {
     return META_COMMAND_SUCCESS;
@@ -94,7 +95,6 @@ int main(int argc, char *argv[]) {
 
     // meta-commands
     if (input_buffer->buffer[0] == '.') {
-      // do_meta_command 现在还是一个wrapper，为后面扩展留出空间
       switch (do_meta_command(input_buffer)) {
         case (META_COMMAND_SUCCESS):
           continue;
