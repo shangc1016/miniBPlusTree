@@ -22,6 +22,8 @@ typedef enum {
   PREPAER_SYNTAX_ERROR
 } PrepaerResult;
 
+typedef enum { EXECUTE_SUCCESS, EXECUTE_TABLE_FULL } ExecuteResult;
+
 typedef enum { STATEMENT_INSERT, STATEMENT_SELECT } StatementType;
 
 // 这个是硬编码的这张表的字段
@@ -59,7 +61,7 @@ void deserialize_row(void *source, Row *destination) {
   memcpy(&(destination->email), source + EMAIL_OFFSET, EMAIL_SIZE);
 }
 
-//数据库表位置
+// 数据库表位置
 const uint32_t PAGE_SIZE = 4096;
 #define TABLE_MAX_PAGES 100
 const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
@@ -71,7 +73,7 @@ typedef struct {
   void *pages[TABLE_MAX_PAGES];
 } Table;
 
-// 得到数据库表中某一行的地址；
+// 得到数据库表中某一行的地址；如果raw所在的page不存在，直接分配一个page
 void *row_slot(Table *table, uint32_t row_num) {
   // page_num：行所在的page号
   uint32_t page_num = row_num / ROWS_PER_PAGE;
@@ -144,7 +146,8 @@ PrepaerResult prepare_statement(InputBuffer *input_buffer,
     }
     return PREPARE_SUCCESS;
   }
-
+  // 只要select语句的前6个字符是`select`，那就执行select，因为只有一个表。
+  // 也不考虑只select一部分字段
   if (strncmp(input_buffer->buffer, "select", 6) == 0) {
     statement->type = STATEMENT_SELECT;
     return PREPARE_SUCCESS;
@@ -152,31 +155,70 @@ PrepaerResult prepare_statement(InputBuffer *input_buffer,
   return PREPARE_UNRECOGNIZED_STATEMENT;
 }
 
-//
-void execute_select(Statement *statement, Table *table) {
+void print_row(Row *row) {
+  printf("(id = %d username = %s email = %s)\n", row->id, row->username,
+         row->email);
+}
+
+// 执行查找语句，把所有的row列都打印出来
+ExecuteResult execute_select(Statement *statement, Table *table) {
   Row row;
   for (uint32_t i = 0; i < table->num_rows; i++) {
     deserialize_row(row_slot(table, i), &row);
     print_row(&row);
   }
+  return EXECUTE_SUCCESS;
 }
 
-//
-void execute_statement(Statement *statement) {
+// 执行插入语句
+ExecuteResult execute_insert(Statement *statement, Table *table) {
+  // 数据库表满了
+  if (table->num_rows >= TABLE_MAX_ROWS) {
+    return EXECUTE_TABLE_FULL;
+  }
+  // 要插入的一条数据
+  Row *row_to_insert = &(statement->row_to_insert);
+  // 先找到数据库表，现在的行数
+  uint32_t num_rows = table->num_rows;
+  // 然后把数据写到这一行
+  serialize_row(row_to_insert, row_slot(table, num_rows));
+  table->num_rows += 1;
+  return EXECUTE_SUCCESS;
+}
+
+// 执行SQL语句；根据不同类型：select、insert、delete等做switch；
+ExecuteResult execute_statement(Statement *statement, Table *table) {
   switch (statement->type) {
     case (STATEMENT_INSERT):
-      printf("this is where we would do an insert.\n");
-      printf("id=%d, username=%s, email=%s\n", statement->row_to_insert.id,
-             statement->row_to_insert.username, statement->row_to_insert.email);
-      break;
+      return execute_insert(statement, table);
     case (STATEMENT_SELECT):
-      printf("this is where we would do a select.\n");
-      break;
+      return execute_select(statement, table);
   }
+}
+
+// 初始化数据库表
+Table *new_table() {
+  Table *table = (Table *)malloc(sizeof(Table));
+  table->num_rows = 0;
+  for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++) {
+    table->pages[i] = NULL;
+  }
+  return table;
+}
+
+// 释放内存中数据库表的内存
+void free_table(Table *table) {
+  for (uint32_t i = 0; i < TABLE_MAX_ROWS; i++) {
+    free(table->pages[i]);
+  }
+  free(table);
 }
 
 int main(int argc, char *argv[]) {
   InputBuffer *input_buffer = new_input_buffer();
+  // 初始化单个数据库表
+  Table *table = new_table();
+
   while (true) {
     print_prompt();
     read_input(input_buffer);
@@ -196,14 +238,22 @@ int main(int argc, char *argv[]) {
     switch (prepare_statement(input_buffer, &statement)) {
       case (PREPARE_SUCCESS):
         break;
+      case (PREPAER_SYNTAX_ERROR):
+        printf("syntax error. could not parse statement\n");
+        continue;
       case (PREPARE_UNRECOGNIZED_STATEMENT):
         printf("Unrecognized keyword at start of '%s'.\n",
                input_buffer->buffer);
         continue;
-      case (PREPAER_SYNTAX_ERROR):
-        printf("syntax error\n");
-        continue;
     }
-    execute_statement(&statement);
+    printf("execute.\n");
+    switch (execute_statement(&statement, table)) {
+      case (EXECUTE_SUCCESS):
+        printf("Executed.\n");
+        break;
+      case (EXECUTE_TABLE_FULL):
+        printf("error: table full\n");
+        break;
+    }
   }
 }
