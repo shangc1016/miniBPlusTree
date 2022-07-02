@@ -37,7 +37,8 @@ typedef struct {
 } Row;
 // table hard-coded end
 
-// 硬编码的数据库表
+// 硬编码的数据库表，计算各个字段的size以及offset，从而在序列化，反序列化的时候计算各个字段的位置
+// 以及确定一个page里面可以放多少个row
 #define size_of_attribute(Struct, Attribute) sizeof(((Struct *)0)->Attribute)
 const uint32_t ID_SIZE = size_of_attribute(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
