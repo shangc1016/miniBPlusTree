@@ -19,8 +19,10 @@ typedef enum {
 typedef enum {
   PREPARE_SUCCESS,
   PREPARE_UNRECOGNIZED_STATEMENT,
-  PREPAER_SYNTAX_ERROR
-} PrepaerResult;
+  PREPARE_SYNTAX_ERROR,
+  PREPARE_STRING_TOO_LONG,
+  PREPARE_NEGATIVE_ID,
+} PrepareResult;
 
 typedef enum { EXECUTE_SUCCESS, EXECUTE_TABLE_FULL } ExecuteResult;
 
@@ -32,8 +34,8 @@ typedef enum { STATEMENT_INSERT, STATEMENT_SELECT } StatementType;
 
 typedef struct {
   uint32_t id;
-  char username[COLUMN_USERNAME_SIZE];
-  char email[COLUMN_EMAIL_SIZE];
+  char username[COLUMN_USERNAME_SIZE + 1];
+  char email[COLUMN_EMAIL_SIZE + 1];
 } Row;
 // table hard-coded end
 
@@ -102,7 +104,7 @@ InputBuffer *new_input_buffer() {
   return input_buffer;
 }
 
-void print_prompt() { printf("db >"); }
+void print_prompt() { printf("db > "); }
 
 void read_input(InputBuffer *input_buffer) {
   ssize_t bytes_read =
@@ -131,21 +133,42 @@ MEtaCommandResult do_meta_command(InputBuffer *input_buffer) {
   }
 }
 
+// insert语句的字符解析
+PrepareResult prepare_insert(InputBuffer *input_buffer, Statement *statement) {
+  statement->type = STATEMENT_INSERT;
+
+  // 注意strtok这个函数是有副作用的，多次调用表现不同；
+  // 第一次调用的时候，str为要解析的字符串，delim为要分割的字符串
+  // 继续分割同一个字符串的时候，str设置为NULL，delim可以设置为不同值
+  // 插入语句eg：`insert {id} {username} {email}`，根据空格分割
+  char *keyword = strtok(input_buffer->buffer, " ");
+  char *id_string = strtok(NULL, " ");
+  char *username = strtok(NULL, " ");
+  char *email = strtok(NULL, " ");
+
+  if (id_string == NULL || username == NULL || email == NULL) {
+    return PREPARE_SYNTAX_ERROR;
+  }
+  int id = atoi(id_string);
+  if (id < 0) {
+    return PREPARE_NEGATIVE_ID;
+  }
+  if (strlen(username) > COLUMN_USERNAME_SIZE ||
+      strlen(email) > COLUMN_EMAIL_SIZE) {
+    return PREPARE_STRING_TOO_LONG;
+  }
+
+  statement->row_to_insert.id = id;
+  strcpy(statement->row_to_insert.username, username);
+  strcpy(statement->row_to_insert.email, email);
+  return PREPARE_SUCCESS;
+}
+
 // 得到statement的类型，select、insert...
-PrepaerResult prepare_statement(InputBuffer *input_buffer,
+PrepareResult prepare_statement(InputBuffer *input_buffer,
                                 Statement *statement) {
   if (strncmp(input_buffer->buffer, "insert", 6) == 0) {
-    statement->type = STATEMENT_INSERT;
-    // 从输入中解析硬编码的这张表，
-    int args_assigned = sscanf(input_buffer->buffer, "insert %d %s %s",
-                               &(statement->row_to_insert.id),
-                               (char *)&(statement->row_to_insert.username),
-                               (char *)&(statement->row_to_insert.email));
-    // 出错
-    if (args_assigned < 3) {
-      return PREPAER_SYNTAX_ERROR;
-    }
-    return PREPARE_SUCCESS;
+    return prepare_insert(input_buffer, statement);
   }
   // 只要select语句的前6个字符是`select`，那就执行select，因为只有一个表。
   // 也不考虑只select一部分字段
@@ -157,8 +180,7 @@ PrepaerResult prepare_statement(InputBuffer *input_buffer,
 }
 
 void print_row(Row *row) {
-  printf("(id = %d username = %s email = %s)\n", row->id, row->username,
-         row->email);
+  printf("(%d, %s, %s)\n", row->id, row->username, row->email);
 }
 
 // 执行查找语句，把所有的row列都打印出来
@@ -239,7 +261,13 @@ int main(int argc, char *argv[]) {
     switch (prepare_statement(input_buffer, &statement)) {
       case (PREPARE_SUCCESS):
         break;
-      case (PREPAER_SYNTAX_ERROR):
+      case (PREPARE_NEGATIVE_ID):
+        printf("ID must be positive.\n");
+        continue;
+      case (PREPARE_STRING_TOO_LONG):
+        printf("String is too long.\n");
+        continue;
+      case (PREPARE_SYNTAX_ERROR):
         printf("syntax error. could not parse statement\n");
         continue;
       case (PREPARE_UNRECOGNIZED_STATEMENT):
@@ -247,13 +275,13 @@ int main(int argc, char *argv[]) {
                input_buffer->buffer);
         continue;
     }
-    printf("execute.\n");
+
     switch (execute_statement(&statement, table)) {
       case (EXECUTE_SUCCESS):
         printf("Executed.\n");
         break;
       case (EXECUTE_TABLE_FULL):
-        printf("error: table full\n");
+        printf("Error: Table full.\n");
         break;
     }
   }
