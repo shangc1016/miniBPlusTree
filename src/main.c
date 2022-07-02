@@ -77,7 +77,14 @@ typedef struct {
   Row row_to_insert;  // 这个是插入语句
 } Statement;
 
-////////////////////////////////////////////////
+// cursor游标
+typedef struct {
+  Table *table;  // 根据cursor可以找到它指向了哪个表
+  uint32_t row_num;
+  bool end_of_table;  // 表示到达表的末尾，新插入的数据就放在这个位置
+} Cursor;
+
+// function declaration =============================
 // 序列化、反序列化
 void serialize_row(Row *, void *);
 void deserialize_row(void *, Row *);
@@ -102,8 +109,8 @@ PrepareResult prepare_statement(InputBuffer *, Statement *);
 ExecuteResult execute_select(Statement *, Table *);
 ExecuteResult execute_insert(Statement *, Table *);
 ExecuteResult execute_statement(Statement *, Table *);
+// function declaration end =========================
 
-/////////////////////////////////////////////////
 // 一行数据的存取，序列化
 void serialize_row(Row *source, void *destination) {
   memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
@@ -392,13 +399,23 @@ void db_close(Table *table) {
   free(table);
 }
 
-// 释放内存中数据库表的内存
-// void free_table(Table *table) {
-//   for (uint32_t i = 0; i < TABLE_MAX_ROWS; i++) {
-//     free(table->pages[i]);
-//   }
-//   free(table);
-// }
+///
+// 创建cursor指向table头
+Cursor *table_start(Table *table) {
+  Cursor *cursor = malloc(sizeof(Cursor));
+  cursor->table = table;
+  cursor->row_num = 0;
+  cursor->end_of_table = (table->num_rows == 0);
+  return cursor;
+}
+
+Cursor *talbe_end(Table *table) {
+  Cursor *cursor = malloc(sizeof(Cursor));
+  cursor->table = table;
+  cursor->row_num = table->num_rows;
+  cursor->end_of_table = true;
+  return cursor;
+}
 
 int main(int argc, char *argv[]) {
   InputBuffer *input_buffer = new_input_buffer();
