@@ -79,8 +79,8 @@ typedef struct {
 
 // cursor游标
 typedef struct {
-  Table *table;  // 根据cursor可以找到它指向了哪个表
-  uint32_t row_num;
+  Table *table;       // 根据cursor可以找到它指向了哪个表
+  uint32_t row_num;   // 表示点前cursor指向的行号
   bool end_of_table;  // 表示到达表的末尾，新插入的数据就放在这个位置
 } Cursor;
 
@@ -109,6 +109,12 @@ PrepareResult prepare_statement(InputBuffer *, Statement *);
 ExecuteResult execute_select(Statement *, Table *);
 ExecuteResult execute_insert(Statement *, Table *);
 ExecuteResult execute_statement(Statement *, Table *);
+
+void cursor_advance(Cursor *);
+void *cursor_value(Cursor *);
+
+Cursor *table_start(Table *);
+Cursor *table_end(Table *);
 // function declaration end =========================
 
 // 一行数据的存取，序列化
@@ -161,14 +167,32 @@ void *get_page(Pager *pager, uint32_t page_num) {
 }
 
 // 得到数据库表中某一行的地址；如果raw所在的page不存在，直接分配一个page
-void *row_slot(Table *table, uint32_t row_num) {
-  // page_num：行所在的page号
+// void *row_slot(Table *table, uint32_t row_num) {
+//   // page_num：行所在的page号
+//   uint32_t page_num = row_num / ROWS_PER_PAGE;
+//   // 由pager加载这一个page，或者直接从cache；或者从文件
+//   void *page = get_page(table->pager, page_num);
+//   uint32_t row_offset = row_num % ROWS_PER_PAGE;
+//   uint32_t byte_offset = row_offset * ROW_SIZE;
+//   return page + byte_offset;
+// }
+
+void *cursor_value(Cursor *cursor) {
+  // 不再直接使用pager索引数据库表的page地址，而是根据cursor检索
+  uint32_t row_num = cursor->row_num;
   uint32_t page_num = row_num / ROWS_PER_PAGE;
-  // 由pager加载这一个page，或者直接从cache；或者从文件
-  void *page = get_page(table->pager, page_num);
+  void *page = get_page(cursor->table->pager, page_num);
   uint32_t row_offset = row_num % ROWS_PER_PAGE;
   uint32_t byte_offset = row_offset * ROW_SIZE;
   return page + byte_offset;
+}
+
+void cursor_advance(Cursor *cursor) {
+  cursor->row_num += 1;
+  // 到达数据库表的末尾
+  if (cursor->row_num >= cursor->table->num_rows) {
+    cursor->end_of_table = true;
+  }
 }
 
 InputBuffer *new_input_buffer() {
@@ -203,6 +227,7 @@ void close_input_buffer(InputBuffer *input_buffer) {
 MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table) {
   // meta-command .exit同时关闭数据库
   if (strcmp(input_buffer->buffer, ".exit") == 0) {
+    // .exit命令同时关闭数据库，把内存中的page写入文件中
     db_close(table);
     exit(EXIT_SUCCESS);
   } else {
@@ -263,10 +288,20 @@ void print_row(Row *row) {
 // 执行查找语句，把所有的row列都打印出来
 ExecuteResult execute_select(Statement *statement, Table *table) {
   Row row;
-  for (uint32_t i = 0; i < table->num_rows; i++) {
-    deserialize_row(row_slot(table, i), &row);
+  // 先把游标设置为文件开头
+  Cursor *cursor = table_start(table);
+
+  while (!(cursor->end_of_table)) {
+    // 把游标位置的一行数据反序列化到row
+    deserialize_row(cursor_value(cursor), &row);
+    // 打印这一行数据
     print_row(&row);
+    // 游标下移一位
+    cursor_advance(cursor);
   }
+
+  // 退出while，表示cursor到了数据库表的末尾，释放cursor；
+  free(cursor);
   return EXECUTE_SUCCESS;
 }
 
@@ -278,10 +313,17 @@ ExecuteResult execute_insert(Statement *statement, Table *table) {
   }
   // 要插入的一条数据
   Row *row_to_insert = &(statement->row_to_insert);
+  // 得到一个指向表末尾的cursor游标
+  Cursor *cursor = table_end(table);
+
   // 先找到数据库表，现在的行数
   uint32_t num_rows = table->num_rows;
   // 然后把数据写到这一行
-  serialize_row(row_to_insert, row_slot(table, num_rows));
+  // serialize_row(row_to_insert, row_slot(table, num_rows));
+  serialize_row(row_to_insert, cursor_value(cursor));
+  // 释放掉cursor空间
+  free(cursor);
+
   table->num_rows += 1;
   return EXECUTE_SUCCESS;
 }
@@ -399,7 +441,7 @@ void db_close(Table *table) {
   free(table);
 }
 
-///
+//
 // 创建cursor指向table头
 Cursor *table_start(Table *table) {
   Cursor *cursor = malloc(sizeof(Cursor));
@@ -409,7 +451,7 @@ Cursor *table_start(Table *table) {
   return cursor;
 }
 
-Cursor *talbe_end(Table *table) {
+Cursor *table_end(Table *table) {
   Cursor *cursor = malloc(sizeof(Cursor));
   cursor->table = table;
   cursor->row_num = table->num_rows;
