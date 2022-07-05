@@ -85,7 +85,7 @@ typedef struct {
 } Cursor;
 
 // part8
-// 分辨内部节点以及叶子节点
+// 分为内部节点以及叶子节点
 typedef enum { NODE_INTERNAL, NODE_LEAF } NodeType;
 // common node header layout；内部节点（包括根节点）
 const uint32_t NODE_TYPE_SIZE = sizeof(uint8_t);  // 区别内部节点以及叶子结点
@@ -371,7 +371,8 @@ ExecuteResult execute_select(Statement *statement, Table *table) {
 // 执行插入语句
 ExecuteResult execute_insert(Statement *statement, Table *table) {
   // 数据库表满了
-  if (table->num_rows >= TABLE_MAX_ROWS) {
+  void *node = get_node(table->pager, table->root_page_num);
+  if ((*leaf_node_num_cells(node) >= LEAF_NODE_MAX_CELLS)) {
     return EXECUTE_TABLE_FULL;
   }
   // 要插入的一条数据
@@ -382,12 +383,12 @@ ExecuteResult execute_insert(Statement *statement, Table *table) {
   // 先找到数据库表，现在的行数
   uint32_t num_rows = table->num_rows;
   // 然后把数据写到这一行
-  // serialize_row(row_to_insert, row_slot(table, num_rows));
-  serialize_row(row_to_insert, cursor_value(cursor));
+  // serialize_row(row_to_insert, cursor_value(cursor));
+  // table->num_rows += 1;
+  leaf_node_insert(cursor, row_to_insert->id, row_to_insert);
   // 释放掉cursor空间
   free(cursor);
 
-  table->num_rows += 1;
   return EXECUTE_SUCCESS;
 }
 
@@ -443,11 +444,43 @@ Pager *pager_open(const char *filename) {
 // 打开数据库表，初始化pager，初始化table
 Table *db_open(const char *filename) {
   Pager *pager = pager_open(filename);
-  uint32_t num_rows = pager->file_length / ROW_SIZE;
+
   Table *table = malloc(sizeof(Table));
   table->pager = pager;
-  table->num_rows = num_rows;
+  table->root_page_num = 0;
+
+  if (pager->num_pages == 0) {
+    // new database file, initialize page 0 as leaf node.
+    void *root_node = get_page(pager, 0);
+    initalize_leaf_node(root_node);
+  }
   return table;
+}
+// 把k/v数据插入到叶子结点，
+void leaf_node_insert(Cursor *cursor, uint32_t key, Row *value) {
+  // 得到游标指向的node，
+  void *node = get_page(cursor->table->pager, cursor->page_num);
+  // 得到这个node上的数据条数
+  uint32_t num_cells = *leaf_node_num_cells(node);
+
+  if (num_cells >= LEAF_NODE_MAX_CELLS) {
+    // 这个节点装满了
+    // TODO:
+    printf("Need to implement splitting a leaf node.\n");
+    exit(EXIT_FAILURE);
+  }
+  // 游标所在的数据位置小于整个node的数据条数
+  if (cursor->cell_num < num_cells) {
+    // 插入数据的时候，需要把后面的每条数据依次后移一位。为当前插入的数据腾出空间。
+    for (uint32_t i = num_cells; i > cursor->cell_num; i--) {
+      memcpy(leaf_node_cell(node, i), leaf_node_cell(node, i - 1),
+             LEAF_NODE_CELL_SIZE);
+    }
+  }
+  // 这个node的数据条数加一
+  *(leaf_node_num_cells(node)) += 1;
+  *(leaf_node_key(node, cursor->cell_num)) = key;
+  serialize_row(value, leaf_node_value(node, cursor->cell_num));
 }
 
 // flush数据到数据库文件
