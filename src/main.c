@@ -57,12 +57,11 @@ const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
 // 数据库表位置
 const uint32_t PAGE_SIZE = 4096;
 #define TABLE_MAX_PAGES 100
-const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
-const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
 typedef struct {
   int file_descriptor;
   uint32_t file_length;  // 文件的大小，可以计算出表中的数据有多少行
+  uint32_t num_pages;    // 底层B+树 数据结构中的叶节点数
   void *pages[TABLE_MAX_PAGES];  // pages就是从文件读到内存中的一个page缓存；
 } Pager;
 
@@ -80,9 +79,43 @@ typedef struct {
 // cursor游标
 typedef struct {
   Table *table;       // 根据cursor可以找到它指向了哪个表
-  uint32_t row_num;   // 表示点前cursor指向的行号
+  uint32_t page_num;  // page_num表示B+树上的哪个节点node
+  uint32_t cell_num;  // 表示一个node上的第几条数据
   bool end_of_table;  // 表示到达表的末尾，新插入的数据就放在这个位置
 } Cursor;
+
+// part8
+// 分辨内部节点以及叶子节点
+typedef enum { NODE_INTERNAL, NODE_LEAF } NodeType;
+// common node header layout；内部节点（包括根节点）
+const uint32_t NODE_TYPE_SIZE = sizeof(uint8_t);  // 区别内部节点以及叶子结点
+const uint32_t NODE_TYPE_OFFSET = 0;
+const uint32_t IS_ROOT_SIZE = sizeof(uint8_t);  // 是否是根节点
+const uint32_t IS_ROOT_OFFSET = NODE_TYPE_SIZE;
+const uint32_t PARENT_POINTER_SIZE = sizeof(uint32_t);  // 父指针
+const uint32_t PARENT_POINTER_OFFSET = IS_ROOT_OFFSET + IS_ROOT_SIZE;
+const uint8_t COMMON_NODE_HEADER_SIZE =
+    NODE_TYPE_SIZE + IS_ROOT_SIZE + PARENT_POINTER_SIZE;
+
+// leaf node header layout；叶子结点
+// 可以看到叶子结点比内部节点多了一个cells属性；
+const uint32_t LEAF_NODE_NUM_CELLS_SIZE =
+    sizeof(uint32_t);  // 叶节点cells，就是一个node存储的数据条数
+const uint32_t LEAF_NODE_NUM_CELLS_OFFSET = COMMON_NODE_HEADER_SIZE;
+const uint32_t LEAF_NODE_HEADER_SIZE =
+    COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE;
+
+// leaf node body layout
+const uint32_t LEAF_NODE_KEY_SIZE = sizeof(uint32_t);
+const uint32_t LEAF_NODE_KEY_OFFSET = 0;
+const uint32_t LEAF_NODE_VALUE_SIZE = ROW_SIZE;
+const uint32_t LEAF_NODE_VALUE_OFFSET =
+    LEAF_NODE_KEY_OFFSET + LEAF_NODE_KEY_SIZE;
+const uint32_t LEAF_NODE_CELL_SIZE = LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE;
+const uint32_t LEAF_NODE_SPACE_FOR_CELLS = PAGE_SIZE - LEAF_NODE_HEADER_SIZE;
+const uint32_t LEAF_NODE_MAX_CELLS =
+    LEAF_NODE_SPACE_FOR_CELLS / LEAF_NODE_CELL_SIZE;
+// part8 end
 
 // function declaration =============================
 // 序列化、反序列化
@@ -95,7 +128,7 @@ Table *db_open(const char *);
 void *get_page(Pager *, uint32_t);
 void *row_slot(Table *, uint32_t);
 Pager *pager_open(const char *);
-void page_flush(Pager *, uint32_t, uint32_t);
+void page_flush(Pager *, uint32_t);
 
 InputBuffer *new_input_buffer();
 void print_prompt();
@@ -115,7 +148,33 @@ void *cursor_value(Cursor *);
 
 Cursor *table_start(Table *);
 Cursor *table_end(Table *);
+// B+树中的一个node节点，相关的操作函数
+uint32_t *leaf_node_num_cells(void *);
+void *leaf_node_cell(void *, uint32_t);
+void *leaf_node_value(void *, uint32_t);
+void initalize_leaf_node(void *);
 // function declaration end =========================
+
+// part8，访问key、value以及元数据都需要用到上面定义好的宏，以及指针算术运算
+// 返回这个node节点的cell数据条数，根据指针运算，node地址加上CELLS的偏移
+uint32_t *leaf_node_num_cells(void *node) {
+  return node + LEAF_NODE_NUM_CELLS_OFFSET;
+}
+// 返回一个node中的第几条记录
+void *leaf_node_cell(void *node, uint32_t cell_num) {
+  return node + LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
+}
+// 返回一个node中的第cell_nums条记录的key值，
+uint32_t *leaf_node_key(void *node, uint32_t cell_num) {
+  return leaf_node_cell(node, cell_num);
+}
+// 返回一个node中第cell_num条记录的value值，
+void *leaf_node_value(void *node, uint32_t cell_num) {
+  return leaf_node_cell(node, cell_num) + LEAF_NODE_KEY_SIZE;
+}
+// 初始化一个node，这儿直接num_cells设置为0
+void initalize_leaf_node(void *node) { *leaf_node_num_cells(node) = 0; }
+// part8 end
 
 // 一行数据的存取，序列化
 void serialize_row(Row *source, void *destination) {
@@ -140,9 +199,11 @@ void *get_page(Pager *pager, uint32_t page_num) {
   }
   // 这一页不在pager缓存中，cache没有命中
   if (pager->pages[page_num] == NULL) {
-    // 先从文件读到内存相应地址
+    // 先分配一页，放从文件读到的内容
     void *page = malloc(PAGE_SIZE);
+    // 计算整个文件有多少页page
     uint32_t num_pages = pager->file_length / PAGE_SIZE;
+    // 有可能文件有不足一页的，也加上，
     if (pager->file_length % PAGE_SIZE) {
       num_pages += 1;
     }
@@ -157,6 +218,12 @@ void *get_page(Pager *pager, uint32_t page_num) {
       }
       // 从文件中读到了page中，更新缓存
       pager->pages[page_num] = page;
+
+      // TODO，这是啥意思？
+      if (page_num >= pager->num_pages) {
+        pager->num_pages = page_num + 1;
+      }
+
     } else {
       printf("Error page number\n");
     }
@@ -166,31 +233,27 @@ void *get_page(Pager *pager, uint32_t page_num) {
   return pager->pages[page_num];
 }
 
-// 得到数据库表中某一行的地址；如果raw所在的page不存在，直接分配一个page
-// void *row_slot(Table *table, uint32_t row_num) {
-//   // page_num：行所在的page号
-//   uint32_t page_num = row_num / ROWS_PER_PAGE;
-//   // 由pager加载这一个page，或者直接从cache；或者从文件
-//   void *page = get_page(table->pager, page_num);
-//   uint32_t row_offset = row_num % ROWS_PER_PAGE;
-//   uint32_t byte_offset = row_offset * ROW_SIZE;
-//   return page + byte_offset;
-// }
-
+// 返回游标cursor所在的位置的一条记录
 void *cursor_value(Cursor *cursor) {
   // 不再直接使用pager索引数据库表的page地址，而是根据cursor检索
-  uint32_t row_num = cursor->row_num;
-  uint32_t page_num = row_num / ROWS_PER_PAGE;
+
+  // page_num: 当前游标所在的page
+  uint32_t page_num = cursor->page_num;
+  // 返回page的地址
   void *page = get_page(cursor->table->pager, page_num);
-  uint32_t row_offset = row_num % ROWS_PER_PAGE;
-  uint32_t byte_offset = row_offset * ROW_SIZE;
-  return page + byte_offset;
+
+  // page地址加上cell_num所对应的地址偏移
+  return leaf_node_value(page, cursor->cell_num);
 }
 
+// cursor往下移动一条数据
 void cursor_advance(Cursor *cursor) {
-  cursor->row_num += 1;
-  // 到达数据库表的末尾
-  if (cursor->row_num >= cursor->table->num_rows) {
+  // 得到cursor所在的当前page
+  uint32_t page_num = cursor->page_num;
+  void *node = get_node(cursor->table->pager, page_num);
+
+  cursor->cell_num +=1;
+  if(cursor->cell_num >= (*leaf_node_num_cells(node))){
     cursor->end_of_table = true;
   }
 }
@@ -338,18 +401,28 @@ ExecuteResult execute_statement(Statement *statement, Table *table) {
   }
 }
 
+// 打开底层存储文件
 Pager *pager_open(const char *filename) {
   // pager打开文件需要可读可写，文件不存在要创建，用户读写权限
+  // FIXME：这儿的open打开权限有问题，后面需要修改
   int fd = open(filename, O_RDWR | O_CREAT, 0777);
   if (fd == -1) {
     printf("Unable to open file\n");
     exit(EXIT_FAILURE);
   }
+  // 得到文件长度
   off_t file_length = lseek(fd, 0, SEEK_END);
 
   Pager *pager = (Pager *)malloc(sizeof(Pager));
   pager->file_descriptor = fd;
   pager->file_length = file_length;
+  pager->num_pages = (file_length / PAGE_SIZE);
+
+  // 检查文件长度是否是PAGE_SIZE的倍数
+  if (file_length % PAGE_SIZE != 0) {
+    printf("DB file is not a whole number of pages. Corrupt file.\n");
+    exit(EXIT_FAILURE);
+  }
 
   for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++) {
     pager->pages[i] = NULL;
@@ -378,7 +451,10 @@ Table *db_open(const char *filename) {
 }
 
 // flush数据到数据库文件
-void page_flush(Pager *pager, uint32_t page_num, uint32_t size) {
+// 因为使用B+树之后，每个节点node的大小就是page(4096B)
+// 即使这个节点没有写满，也直接申请一个page大小的空间
+// 因此在写磁盘的时候，就不用考虑不够一个page的部分了
+void page_flush(Pager *pager, uint32_t page_num) {
   if (pager->pages[page_num] == NULL) {
     printf("Tried to flush null page\n");
     exit(EXIT_FAILURE);
@@ -389,8 +465,9 @@ void page_flush(Pager *pager, uint32_t page_num, uint32_t size) {
     printf("Error seeking\n");
     exit(EXIT_FAILURE);
   }
+  // 之后一部分不够一页的数据直接写满一页
   ssize_t bytes_written =
-      write(pager->file_descriptor, pager->pages[page_num], size);
+      write(pager->file_descriptor, pager->pages[page_num], PAGE_SIZE);
   if (bytes_written == -1) {
     printf("Erroring writing: %d\n", errno);
     exit(EXIT_FAILURE);
@@ -409,20 +486,20 @@ void db_close(Table *table) {
       continue;
     }
     // 写文件
-    page_flush(pager, i, PAGE_SIZE);
+    page_flush(pager, i);
     free(pager->pages[i]);
     pager->pages[i] = NULL;
   }
   // 最后flush不完整的page页
-  uint32_t num_additional_rows = table->num_rows % ROWS_PER_PAGE;
-  if (num_additional_rows > 0) {
-    uint32_t page_num = num_full_pages;  // 完整的页面数量
-    if (pager->pages[page_num] != NULL) {
-      page_flush(pager, page_num, num_additional_rows * ROW_SIZE);
-      free(pager->pages[page_num]);
-      pager->pages[page_num] = NULL;
-    }
-  }
+  // uint32_t num_additional_rows = table->num_rows % ROWS_PER_PAGE;
+  // if (num_additional_rows > 0) {
+  //   uint32_t page_num = num_full_pages;  // 完整的页面数量
+  //   if (pager->pages[page_num] != NULL) {
+  //     page_flush(pager, page_num, num_additional_rows * ROW_SIZE);
+  //     free(pager->pages[page_num]);
+  //     pager->pages[page_num] = NULL;
+  //   }
+  // }
   // 关闭文件
   int result = close(pager->file_descriptor);
   if (result == -1) {
@@ -446,15 +523,26 @@ void db_close(Table *table) {
 Cursor *table_start(Table *table) {
   Cursor *cursor = malloc(sizeof(Cursor));
   cursor->table = table;
-  cursor->row_num = 0;
-  cursor->end_of_table = (table->num_rows == 0);
+  cursor->page_num = table->root_page_num;  // 初始化cursor的page_num
+  cursor->cell_num = 0;  // 设置cursor的cell为0，即指向node的第一条记录
+
+  //
+  void *root_node = get_page(table->pager, table->root_page_num);
+  uint32_t num_cells = *leaf_node_num_cells(root_node);
+  cursor->end_of_table = (num_cells == 0);
+
   return cursor;
 }
-
+// 游标cursor指向数据库表的末尾
 Cursor *table_end(Table *table) {
   Cursor *cursor = malloc(sizeof(Cursor));
   cursor->table = table;
-  cursor->row_num = table->num_rows;
+  cursor->page_num = table->root_page_num;
+
+  void *root_node = get_node(table->pager, table->root_page_num);
+  uint32_t num_cells = *leaf_node_num_cells(root_node);
+  cursor->cell_num = num_cells;
+
   cursor->end_of_table = true;
   return cursor;
 }
