@@ -28,7 +28,11 @@ typedef enum {
   PREPARE_NEGATIVE_ID,
 } PrepareResult;
 
-typedef enum { EXECUTE_SUCCESS, EXECUTE_TABLE_FULL } ExecuteResult;
+typedef enum {
+  EXECUTE_SUCCESS,
+  EXECUTE_DUPLICATE_KEY,
+  EXECUTE_TABLE_FULL,
+} ExecuteResult;
 
 typedef enum { STATEMENT_INSERT, STATEMENT_SELECT } StatementType;
 
@@ -126,7 +130,7 @@ void db_close(Table *);
 Table *db_open(const char *);
 
 void *get_page(Pager *, uint32_t);
-void *row_slot(Table *, uint32_t);
+// void *row_slot(Table *, uint32_t);
 Pager *pager_open(const char *);
 void page_flush(Pager *, uint32_t);
 
@@ -156,6 +160,11 @@ void initalize_leaf_node(void *);
 void print_constants();
 void leaf_node_insert(Cursor *, uint32_t, Row *);
 void print_leaf_node(void *);
+
+Cursor *leaf_node_find(Table *, uint32_t, uint32_t);
+Cursor *table_find(Table *, uint32_t);
+NodeType get_node_type(void *);
+void set_node_type(void *, NodeType);
 // function declaration end =========================
 
 // part8，访问key、value以及元数据都需要用到上面定义好的宏，以及指针算术运算
@@ -176,7 +185,10 @@ void *leaf_node_value(void *node, uint32_t cell_num) {
   return leaf_node_cell(node, cell_num) + LEAF_NODE_KEY_SIZE;
 }
 // 初始化一个node，这儿直接num_cells设置为0
-void initalize_leaf_node(void *node) { *leaf_node_num_cells(node) = 0; }
+void initalize_leaf_node(void *node) {
+  *leaf_node_num_cells(node) = 0;
+  set_node_type(node, NODE_LEAF);
+}
 
 // 打印B+树相关的元数据字段的大小
 void print_constants() {
@@ -198,6 +210,19 @@ void print_leaf_node(void *node) {
   }
 }
 // part8 end
+
+// part9
+// 根据node地址计算得到node的类型
+NodeType get_node_type(void *node) {
+  uint8_t value = *((uint8_t *)(node + NODE_TYPE_OFFSET));
+  return (NodeType)value;
+}
+
+void set_node_type(void *node, NodeType type) {
+  uint8_t value = type;
+  *(uint8_t *)(node + NODE_TYPE_OFFSET) = value;
+}
+// aprt9 end
 
 // 一行数据的存取，序列化
 void serialize_row(Row *source, void *destination) {
@@ -403,19 +428,36 @@ ExecuteResult execute_select(Statement *statement, Table *table) {
 
 // 执行插入语句
 ExecuteResult execute_insert(Statement *statement, Table *table) {
-  // 数据库表满了
+  // 因为现在还没实现完整的B+树，
+  // B+树的根节点也就是叶子结点。所以这儿直接得到root_page，就是唯一的page
   void *node = get_page(table->pager, table->root_page_num);
-  if ((*leaf_node_num_cells(node) >= LEAF_NODE_MAX_CELLS)) {
+  // 此节点的数据条数
+  uint32_t num_cells = *leaf_node_num_cells(node);
+  if (num_cells >= LEAF_NODE_MAX_CELLS) {
     return EXECUTE_TABLE_FULL;
   }
   // 要插入的一条数据
   Row *row_to_insert = &(statement->row_to_insert);
-  // 得到一个指向表末尾的cursor游标
-  Cursor *cursor = table_end(table);
+  // 得到一个指向表末尾的cursor游标，现在还只是在数据库文件的末尾插入
+  // Cursor *cursor = table_end(table);
 
-  // 然后把数据写到这一行
-  // serialize_row(row_to_insert, cursor_value(cursor));
-  // table->num_rows += 1;
+  // 硬编码的数据库表(id, username, email)，其中id就是key
+  uint32_t key_to_insert = row_to_insert->id;
+
+  // 游标找到要插入数据的位置
+  Cursor *cursor = table_find(table, key_to_insert);
+
+  // 游标位置小于这个node的数据条数，那就需要判断一下key
+  if (cursor->cell_num < num_cells) {
+    // 得到游标位置的一条记录的key，
+    uint32_t key_at_index = *leaf_node_key(node, cursor->cell_num);
+    // 已经存在相同key的一条记录
+    if (key_at_index == key_to_insert) {
+      return EXECUTE_DUPLICATE_KEY;
+    }
+  }
+
+  // 然后把数据写到这一行，覆盖掉原来的数据
   leaf_node_insert(cursor, row_to_insert->id, row_to_insert);
   // 释放掉cursor空间
   free(cursor);
@@ -590,16 +632,63 @@ Cursor *table_start(Table *table) {
   return cursor;
 }
 // 游标cursor指向数据库表的末尾
-Cursor *table_end(Table *table) {
-  Cursor *cursor = malloc(sizeof(Cursor));
+// Cursor *table_end(Table *table) {
+//   Cursor *cursor = malloc(sizeof(Cursor));
+//   cursor->table = table;
+//   cursor->page_num = table->root_page_num;
+
+//   void *root_node = get_page(table->pager, table->root_page_num);
+//   uint32_t num_cells = *leaf_node_num_cells(root_node);
+//   cursor->cell_num = num_cells;
+
+//   cursor->end_of_table = true;
+//   return cursor;
+// }
+
+// 根据数据库表中的key设置游标
+
+Cursor *table_find(Table *table, uint32_t key) {
+  uint32_t root_page_num = table->root_page_num;
+  // 数据库的node，一个页面
+  void *root_page = get_page(table->pager, root_page_num);
+  // 判断这个nod而必须是叶子结点，只有叶子结点存储完整数据
+  if (get_node_type(root_page) == NODE_LEAF) {
+    // 在这个node中根据key值查找记录，返回游标
+    return leaf_node_find(table, root_page_num, key);
+  } else {
+    printf("Need to implement searching an internal node\n");
+    exit(EXIT_FAILURE);
+  }
+}
+
+// 在一个node中，根据key设置游标
+Cursor *leaf_node_find(Table *table, uint32_t page_num, uint32_t key) {
+  // 得到这个node
+  void *node = get_page(table->pager, page_num);
+  // 当前node的cells数量
+  uint32_t num_cells = *leaf_node_num_cells(node);
+
+  Cursor *cursor = (Cursor *)malloc(sizeof(Cursor));
   cursor->table = table;
-  cursor->page_num = table->root_page_num;
+  cursor->page_num = page_num;
 
-  void *root_node = get_page(table->pager, table->root_page_num);
-  uint32_t num_cells = *leaf_node_num_cells(root_node);
-  cursor->cell_num = num_cells;
-
-  cursor->end_of_table = true;
+  // binary search， 在node中二分查找key
+  uint32_t min_index = 0;
+  uint32_t one_past_max_index = num_cells;
+  while (one_past_max_index != min_index) {
+    uint32_t index = (one_past_max_index + min_index) / 2;
+    uint32_t key_at_index = *leaf_node_key(node, index);
+    if (key_at_index == key) {
+      cursor->cell_num = index;
+      return cursor;
+    } else if (key_at_index > key) {
+      one_past_max_index = index;
+    } else {
+      min_index = index + 1;
+    }
+  }
+  //到这儿说明max_index == min_index，随便设置都可
+  cursor->cell_num = min_index;
   return cursor;
 }
 
@@ -654,6 +743,9 @@ int main(int argc, char *argv[]) {
     switch (execute_statement(&statement, table)) {
       case (EXECUTE_SUCCESS):
         printf("Executed.\n");
+        break;
+      case (EXECUTE_DUPLICATE_KEY):
+        printf("Error: Duplicate key.\n");
         break;
       case (EXECUTE_TABLE_FULL):
         printf("Error: Table full.\n");
