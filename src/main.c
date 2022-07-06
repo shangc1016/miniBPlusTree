@@ -430,6 +430,7 @@ ExecuteResult execute_select(Statement *statement, Table *table) {
 ExecuteResult execute_insert(Statement *statement, Table *table) {
   // 因为现在还没实现完整的B+树，
   // B+树的根节点也就是叶子结点。所以这儿直接得到root_page，就是唯一的page
+  // get_page 会把分配的这一页page放到自己的缓存之中，缓存的数据结构是指针数组
   void *node = get_page(table->pager, table->root_page_num);
   // 此节点的数据条数
   uint32_t num_cells = *leaf_node_num_cells(node);
@@ -444,7 +445,8 @@ ExecuteResult execute_insert(Statement *statement, Table *table) {
   // 硬编码的数据库表(id, username, email)，其中id就是key
   uint32_t key_to_insert = row_to_insert->id;
 
-  // 游标找到要插入数据的位置
+  // 游标找到要插入数据的位置，这个是根据key的位置找的
+  // 在数据库的表中，key是升序排列的，
   Cursor *cursor = table_find(table, key_to_insert);
 
   // 游标位置小于这个node的数据条数，那就需要判断一下key
