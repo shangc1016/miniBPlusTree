@@ -165,6 +165,7 @@ Cursor *leaf_node_find(Table *, uint32_t, uint32_t);
 Cursor *table_find(Table *, uint32_t);
 NodeType get_node_type(void *);
 void set_node_type(void *, NodeType);
+void leaf_node_split_and_insert(Cursor *, uint32_t, Row *);
 // function declaration end =========================
 
 // part8，访问key、value以及元数据都需要用到上面定义好的宏，以及指针算术运算
@@ -434,9 +435,7 @@ ExecuteResult execute_insert(Statement *statement, Table *table) {
   void *node = get_page(table->pager, table->root_page_num);
   // 此节点的数据条数
   uint32_t num_cells = *leaf_node_num_cells(node);
-  if (num_cells >= LEAF_NODE_MAX_CELLS) {
-    return EXECUTE_TABLE_FULL;
-  }
+
   // 要插入的一条数据
   Row *row_to_insert = &(statement->row_to_insert);
   // 得到一个指向表末尾的cursor游标，现在还只是在数据库文件的末尾插入
@@ -531,6 +530,16 @@ Table *db_open(const char *filename) {
   }
   return table;
 }
+
+void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
+  // 1、分配一个新的叶子结点，把一般的数据拷贝到新的叶子节点中
+  // 2、把当前的K/V插入到两个叶子结点中的一个
+  // 3、更新两个叶子节点的父子关系
+  void *old_page = get_page(cursor->table->pager, cursor->page_num);
+  uint32_t new_page_num = get_unused_page_num(cursor->table->pager);
+  void *new_page = get_page(cursor->table->pager, new_page_num);
+  initalize_leaf_node(new_page);
+}
 // 把k/v数据插入到叶子结点，
 void leaf_node_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 得到游标指向的node，
@@ -539,10 +548,9 @@ void leaf_node_insert(Cursor *cursor, uint32_t key, Row *value) {
   uint32_t num_cells = *leaf_node_num_cells(node);
 
   if (num_cells >= LEAF_NODE_MAX_CELLS) {
-    // 这个节点装满了
-    // TODO:
-    printf("Need to implement splitting a leaf node.\n");
-    exit(EXIT_FAILURE);
+    // 这个节点装满了，需要分裂叶子结点，
+    leaf_node_split_and_insert(cursor, key, value);
+    return;
   }
   // 游标所在的数据位置小于整个node的数据条数
   if (cursor->cell_num < num_cells) {
