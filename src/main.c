@@ -68,6 +68,7 @@ typedef struct {
   uint32_t num_pages;    // 底层B+树 数据结构中的叶节点数
   void *pages[TABLE_MAX_PAGES];  // pages就是从文件读到内存中的一个page缓存；
 } Pager;
+// Pager 是一个数据库表B+树的一个缓存，是一个指针数组
 
 // 这个就是数据库表的page指针数组，包括了表的行数；
 typedef struct {
@@ -531,16 +532,23 @@ Table *db_open(const char *filename) {
   return table;
 }
 
+// 叶子结点的分裂算法
 void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 1、分配一个新的叶子结点，把一般的数据拷贝到新的叶子节点中
   // 2、把当前的K/V插入到两个叶子结点中的一个
   // 3、更新两个叶子节点的父子关系
-  void *old_page = get_page(cursor->table->pager, cursor->page_num);
+
+  void *old_node = get_page(cursor->table->pager, cursor->page_num);
   uint32_t new_page_num = get_unused_page_num(cursor->table->pager);
-  void *new_page = get_page(cursor->table->pager, new_page_num);
-  initalize_leaf_node(new_page);
+  void *new_node = get_page(cursor->table->pager, new_page_num);
+  initalize_leaf_node(new_node);
+
+  // 需要考虑的数据包括这个叶子结点的全部数据以及即将插入的这个数据；
+  for (uint32_t i = LEAF_NODE_MAX_CELLS; i >= 0; i--) {
+  }
 }
-// 把k/v数据插入到叶子结点，
+
+// 把k/v数据插入到叶子结点的cursor游标位置
 void leaf_node_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 得到游标指向的node，
   void *node = get_page(cursor->table->pager, cursor->page_num);
@@ -553,6 +561,8 @@ void leaf_node_insert(Cursor *cursor, uint32_t key, Row *value) {
     return;
   }
   // 游标所在的数据位置小于整个node的数据条数
+  // 就是说这条数据需要插在既有数据中间
+  // 那就是说需要给留出位置
   if (cursor->cell_num < num_cells) {
     // 插入数据的时候，需要把后面的每条数据依次后移一位。为当前插入的数据腾出空间。
     for (uint32_t i = num_cells; i > cursor->cell_num; i--) {
@@ -656,7 +666,7 @@ Cursor *table_start(Table *table) {
 // }
 
 // 根据数据库表中的key设置游标
-
+// 在数据库表中查key值，设置cursor指向此处
 Cursor *table_find(Table *table, uint32_t key) {
   uint32_t root_page_num = table->root_page_num;
   // 数据库的node，一个页面
