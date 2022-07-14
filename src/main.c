@@ -121,6 +121,9 @@ const uint32_t LEAF_NODE_SPACE_FOR_CELLS = PAGE_SIZE - LEAF_NODE_HEADER_SIZE;
 const uint32_t LEAF_NODE_MAX_CELLS =
     LEAF_NODE_SPACE_FOR_CELLS / LEAF_NODE_CELL_SIZE;
 // part8 end
+const uint32_t LEAF_NODE_RIGHT_SPLIT_COUNT = (LEAF_NODE_MAX_CELLS + 1) / 2;
+const uint32_t LEAF_NODE_LEFT_SPLIT_COUNT =
+    (LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT;
 
 // function declaration =============================
 // 序列化、反序列化
@@ -539,14 +542,54 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 3、更新两个叶子节点的父子关系
 
   void *old_node = get_page(cursor->table->pager, cursor->page_num);
+  // 直接返回pager的page数量，此时pager中这个page未分配，就会在get_page中分配新的页面
   uint32_t new_page_num = get_unused_page_num(cursor->table->pager);
   void *new_node = get_page(cursor->table->pager, new_page_num);
+  // 初始化叶子结点，
   initalize_leaf_node(new_node);
 
   // 需要考虑的数据包括这个叶子结点的全部数据以及即将插入的这个数据；
   for (uint32_t i = LEAF_NODE_MAX_CELLS; i >= 0; i--) {
+    void *destination_node;
+    if (i >= LEAF_NODE_LEFT_SPLIT_COUNT) {
+      destination_node = new_node;
+    } else {
+      destination_node = old_node;
+    }
+    uint32_t index_within_node = i % LEAF_NODE_LEFT_SPLIT_COUNT;
+    void *destination = leaf_node_cell(destination_node, index_within_node);
+
+    if (i == cursor->cell_num) {
+      serialize_row(value, destination);
+    } else if (i > cursor->cell_num) {
+      memcpy(destination, leaf_node_cell(old_node, i - 1), LEAF_NODE_CELL_SIZE);
+    } else {
+      memcpy(destination, leaf_node_cell(old_node, i), LEAF_NODE_CELL_SIZE);
+    }
+  }
+
+  // 更新每个node中的数据记录条数
+  // 分别设置原来的node以及新的node上面的数据记录的条数
+  *(leaf_node_num_cells(old_node)) = LEAF_NODE_LEFT_SPLIT_COUNT;
+  *(leaf_node_num_cells(new_node)) = LEAF_NODE_RIGHT_SPLIT_COUNT;
+
+  // 然后更新两个叶子结点的父子关系
+  // 如果old_node是根节点，没有父节点；那就需要创建一个父节点，
+  if (is_node_root(old_node)) {
+    return create_new_root(cursor->table, new_page_num);
+  } else {
+    // TODO：非根节点的情况暂不考虑
+    printf("Need to implement updating parent after split\n");
+    exit(EXIT_FAILURE);
   }
 }
+
+void create_new_root(Table *table, uint32_t right_child_page_num) {}
+
+// pager是数据库在内存中的缓存，用的数据结构是指针数组，
+// 直接返数组中已经使用了的长度，
+// TODO：这个可能后面需要改成循环队列，或者什么调度算法
+uint32_t get_unused_page_num(Pager *pager) { return pager->num_pages; }
 
 // 把k/v数据插入到叶子结点的cursor游标位置
 void leaf_node_insert(Cursor *cursor, uint32_t key, Row *value) {
