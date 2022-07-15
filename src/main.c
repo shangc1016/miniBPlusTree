@@ -125,6 +125,32 @@ const uint32_t LEAF_NODE_RIGHT_SPLIT_COUNT = (LEAF_NODE_MAX_CELLS + 1) / 2;
 const uint32_t LEAF_NODE_LEFT_SPLIT_COUNT =
     (LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT;
 
+// internal node header layout
+// 一个字节存储内部节点保存的key值
+const uint32_t INTERNAL_NODE_NUM_KEYS_SIZE = sizeof(uint32_t);
+const uint32_t INTERNAL_NODE_NUM_KEYS_OFFSET = COMMON_NODE_HEADER_SIZE;
+
+const uint32_t INTERNAL_NODE_RIGHT_CHILD_SIZE = sizeof(uint32_t);
+const uint32_t INTERNAL_NODE_RIGHT_CHILD_OFFSET =
+    INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE;
+const uint32_t INTERNAL_NODE_HEADER_SIZE = COMMON_NODE_HEADER_SIZE +
+                                           INTERNAL_NODE_NUM_KEYS_SIZE +
+                                           INTERNAL_NODE_RIGHT_CHILD_SIZE;
+
+const uint32_t INTERNAL_NODE_KEY_SIZE = sizeof(uint32_t);
+const uint32_t INTERNAL_NODE_CHILD_SIZE = sizeof(uint32_t);
+const uint32_t INTERNAL_NODE_CELL_SIZE =
+    INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;
+// num_keys和right_child合起来是internal_node的元数据
+// 真正指向叶子结点的指针是internal_node_cell，每个cell包含一个key、一个指向子节点的指针
+// INTERNAL_NODE_HEADER_SIZE大小：14B，INTERNAL_NODE_CELL_SIZE大小：8B，
+// 一个节点node大小4KB，可以分配的cell数量是：(4096-14) / 8 = 510。
+// 也就是说，一个内部节点最多有510个叶子结点
+
+// FIXME：这儿的right_child指针是啥意思？？？
+
+/////////// 关于叶子结点、内部节点的定义，为啥定义常量而不用结构体呢？
+
 // function declaration =============================
 // 序列化、反序列化
 void serialize_row(Row *, void *);
@@ -160,7 +186,7 @@ Cursor *table_end(Table *);
 uint32_t *leaf_node_num_cells(void *);
 void *leaf_node_cell(void *, uint32_t);
 void *leaf_node_value(void *, uint32_t);
-void initalize_leaf_node(void *);
+void initialize_leaf_node(void *);
 void print_constants();
 void leaf_node_insert(Cursor *, uint32_t, Row *);
 void print_leaf_node(void *);
@@ -170,6 +196,19 @@ Cursor *table_find(Table *, uint32_t);
 NodeType get_node_type(void *);
 void set_node_type(void *, NodeType);
 void leaf_node_split_and_insert(Cursor *, uint32_t, Row *);
+
+uint32_t *internal_node_num_keys(void *node);
+uint32_t *internal_node_right_child(void *node);
+uint32_t *internal_node_cell(void *node, uint32_t cell_num);
+uint32_t *internal_node_child(void *node, uint32_t child_num);
+uint32_t *internal_node_key(void *node, uint32_t key_num);
+uint32_t get_node_max_key(void *node);
+bool is_node_root(void *node);
+void set_node_root(void *node, bool is_root);
+void indent(uint32_t level);
+void print_tree(Pager *pager, uint32_t page_num, uint32_t indentation_level);
+uint32_t get_unused_page_num(Pager *pager);
+void create_new_root(Table *table, uint32_t right_child_page_num);
 // function declaration end =========================
 
 // part8，访问key、value以及元数据都需要用到上面定义好的宏，以及指针算术运算
@@ -190,9 +229,16 @@ void *leaf_node_value(void *node, uint32_t cell_num) {
   return leaf_node_cell(node, cell_num) + LEAF_NODE_KEY_SIZE;
 }
 // 初始化一个node，这儿直接num_cells设置为0
-void initalize_leaf_node(void *node) {
+void initialize_leaf_node(void *node) {
   *leaf_node_num_cells(node) = 0;
+  // 设置根节点
+  set_node_root(node, false);
   set_node_type(node, NODE_LEAF);
+}
+void initialize_internal_node(void *node) {
+  set_node_type(node, NODE_INTERNAL);
+  set_node_root(node, false);
+  *internal_node_num_keys(node) = 0;
 }
 
 // 打印B+树相关的元数据字段的大小
@@ -205,15 +251,59 @@ void print_constants() {
   printf("LEAF_NODEMAX_CELLS :%d\n", LEAF_NODE_MAX_CELLS);
 }
 //打印处一个叶子结点的记录条数、以及每个记录的key(对应到硬编码的单表数据库中，就是id字段)
-void print_leaf_node(void *node) {
-  // 得到这个节点的记录数目
-  uint32_t num_cells = *leaf_node_num_cells(node);
-  printf("leaf (size %d)\n", num_cells);
-  for (uint32_t i = 0; i < num_cells; i++) {
-    uint32_t key = *leaf_node_key(node, i);
-    printf("  - %d : %d\n", i, key);
+// void print_leaf_node(void *node) {
+//   // 得到这个节点的记录数目
+//   uint32_t num_cells = *leaf_node_num_cells(node);
+//   printf("leaf (size %d)\n", num_cells);
+//   for (uint32_t i = 0; i < num_cells; i++) {
+//     uint32_t key = *leaf_node_key(node, i);
+//     printf("  - %d : %d\n", i, key);
+//   }
+// }
+
+// 原来的数据结构是数组指针的方式，现在是数据结构是树。
+// 存储结构可视化，需要递归的遍历树
+
+// 根据所在的树的层数，打印空格，表示层级关系
+void indent(uint32_t level) {
+  for (uint32_t i = 0; i < level; i++) {
+    printf("  ");
   }
 }
+
+void print_tree(Pager *pager, uint32_t page_num, uint32_t indentation_level) {
+  void *node = get_page(pager, page_num);
+  uint32_t num_keys, child;
+
+  switch (get_node_type(node)) {
+    case (NODE_LEAF):
+      // 得到叶子结点的数据个数
+      num_keys = *leaf_node_num_cells(node);
+      // 打印缩进
+      indent(indentation_level);
+      printf("- leaf (size %d)\n", num_keys);
+      // 依次打印叶子节点中所有数据的key
+      for (uint32_t i = 0; i < num_keys; i++) {
+        indent(indentation_level + 1);
+        printf("- %d\n", *leaf_node_key(node, i));
+      }
+      break;
+    case (NODE_INTERNAL):
+      num_keys = *internal_node_num_keys(node);
+      indent(indentation_level);
+      printf("- internal (size %d)\n", num_keys);
+      for (uint32_t i = 0; i < num_keys; i++) {
+        child = *internal_node_child(node, i);
+        // 递归
+        print_tree(pager, child, indentation_level + 1);
+      }
+      child = *internal_node_right_child(node);
+      // 递归
+      print_tree(pager, child, indentation_level + 1);
+      break;
+  }
+}
+
 // part8 end
 
 // part9
@@ -349,7 +439,8 @@ MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table) {
   } else if (strcmp(input_buffer->buffer, ".btree") == 0) {
     // 增加一个".btree" 元命令，打印出单表的叶子节点的信息
     printf("Tree:\n");
-    print_leaf_node(get_page(table->pager, 0));
+    // print_leaf_node(get_page(table->pager, 0));
+    print_tree(table->pager, 0, 0);
     return META_COMMAND_SUCCESS;
   } else if (strcmp(input_buffer->buffer, ".constants") == 0) {
     // 增加一个".constant" 元命令
@@ -530,9 +621,71 @@ Table *db_open(const char *filename) {
   if (pager->num_pages == 0) {
     // new database file, initialize page 0 as leaf node.
     void *root_node = get_page(pager, 0);
-    initalize_leaf_node(root_node);
+    initialize_leaf_node(root_node);
+    set_node_root(root_node, true);
   }
   return table;
+}
+
+// 表示内部节点包括的key数量，最大是510个
+uint32_t *internal_node_num_keys(void *node) {
+  return node + INTERNAL_NODE_NUM_KEYS_OFFSET;
+}
+// 这个指针指向的是内部节点的(最)右边的节点指针
+uint32_t *internal_node_right_child(void *node) {
+  return node + INTERNAL_NODE_RIGHT_CHILD_OFFSET;
+}
+// 返回内部节点中第cell_num个cell的地址
+uint32_t *internal_node_cell(void *node, uint32_t cell_num) {
+  return node + INTERNAL_NODE_HEADER_SIZE + INTERNAL_NODE_CELL_SIZE * cell_num;
+}
+
+// 返回internal_node中第child_num个子节点指针
+uint32_t *internal_node_child(void *node, uint32_t child_num) {
+  uint32_t num_keys = *internal_node_num_keys(node);
+  // child_num大于这个internal_node中的子节点数量
+  if (child_num > num_keys) {
+    printf("Tried to access child_num %d > num_keys +%d\n", child_num,
+           num_keys);
+    exit(EXIT_FAILURE);
+  } else if (child_num == num_keys) {
+    // 要最后一个子节点，直接返回right_child
+    return internal_node_right_child(node);
+  } else {
+    // 否则挨个找，找到第child_num个子节点
+    return internal_node_cell(node, child_num);
+  }
+}
+
+// 返回internal_node中第key_num个子节点对应的key值
+uint32_t *internal_node_key(void *node, uint32_t key_num) {
+  return internal_node_cell(node, key_num) + INTERNAL_NODE_CHILD_SIZE;
+}
+
+// 返回内部节点中最大的key值
+// 这个可以在判断key对应的数据存在不存在，大于这个值肯定不存在
+uint32_t get_node_max_key(void *node) {
+  switch (get_node_type(node)) {
+    case NODE_INTERNAL:
+      // 返回node节点中最后一个key，key是按照升序排列的，最后一个就是最大的
+      return *internal_node_key(node, *internal_node_num_keys(node) - 1);
+    case NODE_LEAF:
+      // 叶子结点
+      // 返回叶子结点中最大key值，这个是遍历顺序存储在node中的记录的key
+      return *leaf_node_key(node, *leaf_node_num_cells(node) - 1);
+  }
+}
+
+// 判断节点是不是根节点
+bool is_node_root(void *node) {
+  // 记录是否是根节点，用了uint8数据类型
+  uint8_t value = *(uint8_t *)(node + NODE_TYPE_OFFSET);
+  return (bool)value;
+}
+
+void set_node_root(void *node, bool is_root) {
+  uint8_t value = (uint8_t)is_root;
+  *(uint8_t *)(node + NODE_TYPE_OFFSET) = value;
 }
 
 // 叶子结点的分裂算法
@@ -546,7 +699,7 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   uint32_t new_page_num = get_unused_page_num(cursor->table->pager);
   void *new_node = get_page(cursor->table->pager, new_page_num);
   // 初始化叶子结点，
-  initalize_leaf_node(new_node);
+  initialize_leaf_node(new_node);
 
   // 需要考虑的数据包括这个叶子结点的全部数据以及即将插入的这个数据；
   for (uint32_t i = LEAF_NODE_MAX_CELLS; i >= 0; i--) {
@@ -584,7 +737,33 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   }
 }
 
-void create_new_root(Table *table, uint32_t right_child_page_num) {}
+// 为两个叶子结点创造一个root节点
+// 调用此函数的时候，已经分配了root节点的右孩子节点，已经把上半部分数据拷贝到了右孩子节点了；
+// 在此函数中，分配一个新的节点作为左孩子，然后拷贝数据，
+void create_new_root(Table *table, uint32_t right_child_page_num) {
+  //
+  void *root = get_page(table->pager, table->root_page_num);
+  void *right_child = get_page(table->pager, right_child_page_num);
+
+  // 分配了左孩子节点
+  uint32_t left_child_page_num = get_unused_page_num(table->pager);
+  void *left_child = get_page(table->pager, left_child_page_num);
+
+  // 把root节点的数据拷贝到左孩子节点
+  memcpy(left_child, root, PAGE_SIZE);
+
+  // 设置root
+  set_node_root(left_child, false);
+
+  // 最后把root设置为internal内部节点，设置左右两个孩子
+  initialize_internal_node(root);
+  set_node_root(root, true);
+  *internal_node_num_keys(root) = 1;
+  *internal_node_child(root, 0) = left_child_page_num;
+
+  uint32_t left_child_max_key = get_node_max_key(left_child);
+  *internal_node_key(root, 0) = left_child_max_key;
+}
 
 // pager是数据库在内存中的缓存，用的数据结构是指针数组，
 // 直接返数组中已经使用了的长度，
