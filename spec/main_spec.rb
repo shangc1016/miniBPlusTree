@@ -99,7 +99,7 @@ describe 'database' do
   # add extra test example here
 
   it 'allows printing out the structure of a 3-leaf-node btree' do
-    script = (1..10).map do |i|
+    script = (1..13).map do |i|
       "insert #{i} user#{i} person#{i}@example.com"
     end
     script << ".btree"
@@ -126,9 +126,9 @@ describe 'database' do
       "  - 11",
       "  - 12",
       "  - 13",
-      "  - 14",
+      # "  - 14",
       # "db > Need to implement searching an internal node",
     ])
     end
-
+    
 end
