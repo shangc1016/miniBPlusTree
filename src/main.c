@@ -682,7 +682,7 @@ bool is_node_root(void *node) {
   uint8_t value = *(uint8_t *)(node + NODE_TYPE_OFFSET);
   return (bool)value;
 }
-
+// 把这个节点设置为root节点
 void set_node_root(void *node, bool is_root) {
   uint8_t value = (uint8_t)is_root;
   *(uint8_t *)(node + NODE_TYPE_OFFSET) = value;
@@ -704,6 +704,7 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 需要考虑的数据包括这个叶子结点的全部数据以及即将插入的这个数据；
   for (uint32_t i = LEAF_NODE_MAX_CELLS; i >= 0; i--) {
     void *destination_node;
+    // 把一个page中，处于高key的一半记录拷贝到新的页面page
     if (i >= LEAF_NODE_LEFT_SPLIT_COUNT) {
       destination_node = new_node;
     } else {
@@ -712,6 +713,7 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
     uint32_t index_within_node = i % LEAF_NODE_LEFT_SPLIT_COUNT;
     void *destination = leaf_node_cell(destination_node, index_within_node);
 
+    // 下面这么memcpy的话，岂不是old_page的也要拷贝一遍？
     if (i == cursor->cell_num) {
       serialize_row(value, destination);
     } else if (i > cursor->cell_num) {
