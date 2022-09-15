@@ -14,6 +14,4 @@ db_open()
   // pager是文件层次之上的抽象；关键字段是page，每个4KB页面
   // table是pager之上的抽象；关键字段是row，每条记录
 
-
-  
 ```

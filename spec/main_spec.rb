@@ -109,7 +109,6 @@ describe 'database' do
   end
 
 
-
   # part5 new 6
   it 'keeps data after closing connection' do
     result1 = run_script([
