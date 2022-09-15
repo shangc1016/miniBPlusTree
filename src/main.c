@@ -296,12 +296,14 @@ Pager *pager_open(const char *filename) {
     printf("Unable to open file\n");
     exit(EXIT_FAILURE);
   }
+  // 得到文件长度
   off_t file_length = lseek(fd, 0, SEEK_END);
 
   Pager *pager = (Pager *)malloc(sizeof(Pager));
   pager->file_descriptor = fd;
   pager->file_length = file_length;
 
+  // 初始化的时候，数据库表的内存缓存是空的
   for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++) {
     pager->pages[i] = NULL;
   }
