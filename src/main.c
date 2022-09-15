@@ -45,9 +45,11 @@ typedef struct {
 const uint32_t ID_SIZE = size_of_attribute(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
 const uint32_t EMAIL_SIZE = size_of_attribute(Row, email);
+
 const uint32_t ID_OFFSET = 0;
 const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
 const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
+
 const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
 
 // 一行数据的存取，序列化
@@ -153,8 +155,10 @@ PrepareResult prepare_insert(InputBuffer *input_buffer, Statement *statement) {
   if (id < 0) {
     return PREPARE_NEGATIVE_ID;
   }
-  if (strlen(username) > COLUMN_USERNAME_SIZE ||
-      strlen(email) > COLUMN_EMAIL_SIZE) {
+  if (strlen(username) > COLUMN_USERNAME_SIZE) {
+    return PREPARE_STRING_TOO_LONG;
+  }
+  if(strlen(email) > COLUMN_EMAIL_SIZE) {
     return PREPARE_STRING_TOO_LONG;
   }
 
