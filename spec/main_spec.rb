@@ -1,91 +1,39 @@
+
+
 describe 'database' do
+
+
     def run_script(commands)
-      raw_output = nil
-      IO.popen("src/db", "r+") do |pipe|
-        commands.each do |command|
-          pipe.puts command
+        raw_output = nil
+        IO.popen("./db", "r+") do | pipe |
+            commands.each do | command |
+                pipe.puts command
+            end
+
+            pipe.close_write
+
+            # read entire output
+            raw_output = pipe.gets(nil)
         end
-  
-        pipe.close_write
-  
-        # Read entire output
-        raw_output = pipe.gets(nil)
-      end
-      raw_output.split("\n")
-    end
-  
-    it 'inserts and retrieves a row' do
-      result = run_script([
-        "insert 1 user1 person1@example.com",
-        "select",
-        ".exit",
-      ])
-      expect(result).to match_array([
-        "db > Executed.",
-        "db > (1, user1, person1@example.com)",
-        "Executed.",
-        "db > ",
-      ])
-    end
-
-    it 'prints error message when table is full' do
-      # 这儿为啥是1401呢？因为TABLE_MAX_ROWS是1400，插入第1401个就溢出了
-      script = (1..1401).map do |i|
-        "insert #{i} user#{i} person#{i}@example.com"
-      end
-      script << ".exit"
-      result = run_script(script)
-      expect(result[-2]).to eq('db > Error: Table full.')
+        raw_output.split("\n")
     end
 
 
-    it 'allow inserting strings that are the maximun length' do
-      long_username = "a"*32
-      long_email = "a"*255
-      script = [
-        "insert 1 #{long_username} #{long_email}",
-        "select",
-        ".exit"
-      ]
-      result = run_script(script)
-      expect(result).to match_array([
-        "db > Executed.",
-        "db > (1, #{long_username}, #{long_email})",
-        "Executed.",
-        "db > ",
-      ])
-    end
 
-    it 'prints error message if strings are too long' do
-      long_username = "a"*33
-      long_email = "a"*256
-      script = [
-        "insert 1 #{long_username} #{long_email}",
-        "select",
-        ".exit",
-      ]
-      result = run_script(script)
-      expect(result).to match_array([
-        "db > String is too long.",
-        "db > Executed.",
-        "db > ",
-      ])
-      end
-
-      it 'prints error message if id is negative' do
-        script = [
-          "insert -1 cstack foo@bar.com",
-          "select",
-          ".exit",
-        ]
-        result = run_script(script)
-        expect(result).to match_array([
-          "db > ID must be positive.",
-          "db > Executed.",
-          "db > ",
+    it 'inserts and retrieves a row' do 
+        result = run_script([
+            "insert i user1 person1@example.com",
+            "select",
+            ".exit",
         ])
-      end
 
-    # add extra test example here
+        expect(result).to match_array([
+            "db > Executed.",
+            "db > (1, user1, person1@example.com)",
+            "Executed.",
+            "db > ",
+        ])
+    end
 
-  end
+    
+end
