@@ -5,9 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+<<<<<<< HEAD
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+=======
+#include <sys/types.h>
+>>>>>>> origin/master
 
 typedef struct {
   char *buffer;
