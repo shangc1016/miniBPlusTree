@@ -122,6 +122,7 @@ const uint32_t LEAF_NODE_MAX_CELLS =
     LEAF_NODE_SPACE_FOR_CELLS / LEAF_NODE_CELL_SIZE;
 // part8 end
 const uint32_t LEAF_NODE_RIGHT_SPLIT_COUNT = (LEAF_NODE_MAX_CELLS + 1) / 2;
+// LEAF_NODE_LEFT_SPLIT_COUNT这个就是英特叶子节点中记录条数的一半
 const uint32_t LEAF_NODE_LEFT_SPLIT_COUNT =
     (LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT;
 
@@ -131,6 +132,8 @@ const uint32_t INTERNAL_NODE_NUM_KEYS_SIZE = sizeof(uint32_t);
 const uint32_t INTERNAL_NODE_NUM_KEYS_OFFSET = COMMON_NODE_HEADER_SIZE;
 
 const uint32_t INTERNAL_NODE_RIGHT_CHILD_SIZE = sizeof(uint32_t);
+// internal_node_right_child_size 保存了内部节点的最右侧的子节点的页号
+// 可以加速寻找子节点，如果要找内部节点的最后一个子节点，不用遍历了。
 const uint32_t INTERNAL_NODE_RIGHT_CHILD_OFFSET =
     INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE;
 const uint32_t INTERNAL_NODE_HEADER_SIZE = COMMON_NODE_HEADER_SIZE +
@@ -231,12 +234,13 @@ void *leaf_node_value(void *node, uint32_t cell_num) {
 // 初始化一个node，这儿直接num_cells设置为0
 void initialize_leaf_node(void *node) {
   *leaf_node_num_cells(node) = 0;
-  // 设置根节点
+  // 设置节点，不为根节点
   set_node_root(node, false);
   set_node_type(node, NODE_LEAF);
 }
 void initialize_internal_node(void *node) {
   set_node_type(node, NODE_INTERNAL);
+  // 内部节点初始化为非root
   set_node_root(node, false);
   *internal_node_num_keys(node) = 0;
 }
@@ -296,9 +300,11 @@ void print_tree(Pager *pager, uint32_t page_num, uint32_t indentation_level) {
         child = *internal_node_child(node, i);
         // 递归
         print_tree(pager, child, indentation_level + 1);
+        indent(indentation_level + 1);
+        printf("- key %d\n", *internal_node_key(node, i));
       }
+      // 在这儿可以看到，内部节点的其他子节点和最右侧的子节点是分开的
       child = *internal_node_right_child(node);
-      // 递归
       print_tree(pager, child, indentation_level + 1);
       break;
   }
@@ -315,7 +321,7 @@ NodeType get_node_type(void *node) {
 
 void set_node_type(void *node, NodeType type) {
   uint8_t value = type;
-  *(uint8_t *)(node + NODE_TYPE_OFFSET) = value;
+  *((uint8_t *)(node + NODE_TYPE_OFFSET)) = value;
 }
 // aprt9 end
 
@@ -359,16 +365,14 @@ void *get_page(Pager *pager, uint32_t page_num) {
         printf("Error reading file: %d\n", errno);
         exit(EXIT_FAILURE);
       }
-      // 从文件中读到了page中，更新缓存
-      pager->pages[page_num] = page;
+    }
 
-      // TODO，这是啥意思？
-      if (page_num >= pager->num_pages) {
-        pager->num_pages = page_num + 1;
-      }
+    // 从文件中读到了page中，更新缓存
+    pager->pages[page_num] = page;
 
-    } else {
-      printf("Error page number\n");
+    // TODO，这是啥意思？
+    if (page_num >= pager->num_pages) {
+      pager->num_pages = page_num + 1;
     }
   }
   // cache命中，直接返回那一页的地址；
@@ -439,7 +443,6 @@ MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table) {
   } else if (strcmp(input_buffer->buffer, ".btree") == 0) {
     // 增加一个".btree" 元命令，打印出单表的叶子节点的信息
     printf("Tree:\n");
-    // print_leaf_node(get_page(table->pager, 0));
     print_tree(table->pager, 0, 0);
     return META_COMMAND_SUCCESS;
   } else if (strcmp(input_buffer->buffer, ".constants") == 0) {
@@ -460,7 +463,7 @@ PrepareResult prepare_insert(InputBuffer *input_buffer, Statement *statement) {
   // 第一次调用的时候，str为要解析的字符串，delim为要分割的字符串
   // 继续分割同一个字符串的时候，str设置为NULL，delim可以设置为不同值
   // 插入语句eg：`insert {id} {username} {email}`，根据空格分割
-  char *keyword = strtok(input_buffer->buffer, " ");
+  strtok(input_buffer->buffer, " ");
   char *id_string = strtok(NULL, " ");
   char *username = strtok(NULL, " ");
   char *email = strtok(NULL, " ");
@@ -553,6 +556,7 @@ ExecuteResult execute_insert(Statement *statement, Table *table) {
     }
   }
 
+  // printf("==%u, %u\n", cursor->page_num, cursor->cell_num);
   // 然后把数据写到这一行，覆盖掉原来的数据
   leaf_node_insert(cursor, row_to_insert->id, row_to_insert);
   // 释放掉cursor空间
@@ -685,13 +689,14 @@ bool is_node_root(void *node) {
 // 把这个节点设置为root节点
 void set_node_root(void *node, bool is_root) {
   uint8_t value = (uint8_t)is_root;
-  *(uint8_t *)(node + NODE_TYPE_OFFSET) = value;
+  // 这儿的错误，太蠢了
+  *(uint8_t *)(node + IS_ROOT_OFFSET) = value;
 }
 
 // 叶子结点的分裂算法
 void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 1、分配一个新的叶子结点，把一般的数据拷贝到新的叶子节点中
-  // 2、把当前的K/V插入到两个叶子结点中的一个
+  // 2、把当前的K-V记录,插入新旧两个叶子节点中的一个
   // 3、更新两个叶子节点的父子关系
 
   void *old_node = get_page(cursor->table->pager, cursor->page_num);
@@ -701,8 +706,9 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 初始化叶子结点，
   initialize_leaf_node(new_node);
 
-  // 需要考虑的数据包括这个叶子结点的全部数据以及即将插入的这个数据；
-  for (uint32_t i = LEAF_NODE_MAX_CELLS; i >= 0; i--) {
+  // 需要考虑的数据包括这个叶子结点的全部数据以及即将插入的这个数据
+  // 要把这些数据分成两部分，其中的一部分拷贝到新的叶子节点上
+  for (int32_t i = LEAF_NODE_MAX_CELLS; i >= 0; i--) {
     void *destination_node;
     // 把一个page中，处于高key的一半记录拷贝到新的页面page
     if (i >= LEAF_NODE_LEFT_SPLIT_COUNT) {
@@ -710,15 +716,20 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
     } else {
       destination_node = old_node;
     }
+    // index_within_node就是这条记录在新的节点中的位置，余LEAF_NODE_LEFT_SPLIT_COUNT就行
     uint32_t index_within_node = i % LEAF_NODE_LEFT_SPLIT_COUNT;
     void *destination = leaf_node_cell(destination_node, index_within_node);
 
     // 下面这么memcpy的话，岂不是old_page的也要拷贝一遍？
     if (i == cursor->cell_num) {
+      // 如果这条数据是即将插入的数据，直接序列化到指定位置
       serialize_row(value, destination);
+      // cursor->cell_num 指向了当前要插入数据的位置
     } else if (i > cursor->cell_num) {
+      // 后半段数据?
       memcpy(destination, leaf_node_cell(old_node, i - 1), LEAF_NODE_CELL_SIZE);
     } else {
+      // 前半段数据?
       memcpy(destination, leaf_node_cell(old_node, i), LEAF_NODE_CELL_SIZE);
     }
   }
@@ -730,6 +741,7 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
 
   // 然后更新两个叶子结点的父子关系
   // 如果old_node是根节点，没有父节点；那就需要创建一个父节点，
+  // 到此位置，old_node、new_node没有建立联系
   if (is_node_root(old_node)) {
     return create_new_root(cursor->table, new_page_num);
   } else {
@@ -742,29 +754,41 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
 // 为两个叶子结点创造一个root节点
 // 调用此函数的时候，已经分配了root节点的右孩子节点，已经把上半部分数据拷贝到了右孩子节点了；
 // 在此函数中，分配一个新的节点作为左孩子，然后拷贝数据，
+// 这个的参数为什么这么奇怪？left_num就是cursor指向的位置，所以right_num只能以参数的方式给出？是吗？
 void create_new_root(Table *table, uint32_t right_child_page_num) {
   //
   void *root = get_page(table->pager, table->root_page_num);
   void *right_child = get_page(table->pager, right_child_page_num);
 
-  // 分配了左孩子节点
+  // 分配了左孩子节点，left child应该是新分配的节点
   uint32_t left_child_page_num = get_unused_page_num(table->pager);
   void *left_child = get_page(table->pager, left_child_page_num);
 
   // 把root节点的数据拷贝到左孩子节点
   memcpy(left_child, root, PAGE_SIZE);
 
-  // 设置root
+  // root节点的数据拷贝到left_child，然后取消掉root标记
   set_node_root(left_child, false);
+  // BUG:FIXME,这儿应该还需要把left_child这个节点设置为叶子结点?
+  set_node_type(left_child, NODE_LEAF);
+  set_node_type(root, NODE_INTERNAL);
+
+  // 这儿为什么要memcpy拷贝一次数据呢？为啥不直接把root当做left_child，然后把新分配空间的page当做root
+  // 还能少memcpy一次？
 
   // 最后把root设置为internal内部节点，设置左右两个孩子
   initialize_internal_node(root);
+  // 原来的root仍然是新的root
   set_node_root(root, true);
+  // 设置内部节点的key为1，数量
   *internal_node_num_keys(root) = 1;
+  // 并且指定内部节点的第一个孩子节点的page_num，主义者而不是第一个孩子节点的地址，而是page_num，解耦
   *internal_node_child(root, 0) = left_child_page_num;
-
+  // 设置内部节点第1个key值是left_child中最大的key值。
   uint32_t left_child_max_key = get_node_max_key(left_child);
   *internal_node_key(root, 0) = left_child_max_key;
+  // 同样的方法，设置root的右孩子节点，只需要设置page_num。
+  *internal_node_right_child(root) = right_child_page_num;
 }
 
 // pager是数据库在内存中的缓存，用的数据结构是指针数组，

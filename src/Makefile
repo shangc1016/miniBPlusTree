@@ -1,9 +1,9 @@
 # 
 # designate compiler
-CC := clang
-CXX := clang++
+CC := gcc
+CXX := g++
 
-CFLAGS := -Werror
+CFLAGS := -Werror -O0 -g
 
 # PHONY
 .PHONY: all clean
