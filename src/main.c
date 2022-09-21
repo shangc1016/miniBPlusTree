@@ -654,6 +654,7 @@ Cursor *table_find(Table *table, uint32_t key) {
   // 数据库的node，一个页面
   void *root_page = get_page(table->pager, root_page_num);
   // 判断这个nod而必须是叶子结点，只有叶子结点存储完整数据
+  // 内部节点不保存插入数据
   if (get_node_type(root_page) == NODE_LEAF) {
     // 在这个node中根据key值查找记录，返回游标
     return leaf_node_find(table, root_page_num, key);
@@ -664,6 +665,10 @@ Cursor *table_find(Table *table, uint32_t key) {
 }
 
 // 在一个node中，根据key设置游标
+// 这个函数狯的curosr位置可能有三种情况
+// 1、key的位置
+// 2、key的位置，但是位置不为空
+// 3、key的下一个位置
 Cursor *leaf_node_find(Table *table, uint32_t page_num, uint32_t key) {
   // 得到这个node
   void *node = get_page(table->pager, page_num);
