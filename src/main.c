@@ -98,7 +98,7 @@ const uint8_t COMMON_NODE_HEADER_SIZE =
     NODE_TYPE_SIZE + IS_ROOT_SIZE + PARENT_POINTER_SIZE;
 
 // leaf node header layout；叶子结点
-// 可以看到叶子结点比内部节点多了一个cells属性；
+// 可以看到叶子结点比内pager_部节点多了一个cells属性；
 const uint32_t LEAF_NODE_NUM_CELLS_SIZE =
     sizeof(uint32_t);  // 叶节点cells，就是一个node存储的数据条数
 const uint32_t LEAF_NODE_NUM_CELLS_OFFSET = COMMON_NODE_HEADER_SIZE;
@@ -128,7 +128,7 @@ Table *db_open(const char *);
 void *get_page(Pager *, uint32_t);
 void *row_slot(Table *, uint32_t);
 Pager *pager_open(const char *);
-void page_flush(Pager *, uint32_t);
+void pager_flush(Pager *, uint32_t);
 
 InputBuffer *new_input_buffer();
 void print_prompt();
@@ -187,7 +187,8 @@ void print_constants() {
   printf("LEAF_NODE_SPACE_FOR_CELLS :%d\n", LEAF_NODE_SPACE_FOR_CELLS);
   printf("LEAF_NODEMAX_CELLS :%d\n", LEAF_NODE_MAX_CELLS);
 }
-//打印处一个叶子结点的记录条数、以及每个记录的key(对应到硬编码的单表数据库中，就是id字段)
+// 打印处一个叶子结点的记录条数、以及每个记录的key(对应到硬编码的单表数据库中，就是id字段)
+// 打印的格式(第几条记录，记录的key)
 void print_leaf_node(void *node) {
   // 得到这个节点的记录数目
   uint32_t num_cells = *leaf_node_num_cells(node);
@@ -518,7 +519,7 @@ void leaf_node_insert(Cursor *cursor, uint32_t key, Row *value) {
 // 因为使用B+树之后，每个节点node的大小就是page(4096B)
 // 即使这个节点没有写满，也直接申请一个page大小的空间
 // 因此在写磁盘的时候，就不用考虑不够一个page的部分了
-void page_flush(Pager *pager, uint32_t page_num) {
+void pager_flush(Pager *pager, uint32_t page_num) {
   if (pager->pages[page_num] == NULL) {
     printf("Tried to flush null page\n");
     exit(EXIT_FAILURE);
@@ -550,7 +551,7 @@ void db_close(Table *table) {
       continue;
     }
     // 写文件
-    page_flush(pager, i);
+    pager_flush(pager, i);
     free(pager->pages[i]);
     pager->pages[i] = NULL;
   }
