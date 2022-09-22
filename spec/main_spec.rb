@@ -198,7 +198,7 @@ describe 'database' do
   # ruby中`..`、`...`生成范围，区别在于两个点包含上下界、三个点不包含上界
   it 'prints all rows in a multi-level tree' do
     script = []
-    (1..21).each do |i|
+    (1..210).each do |i|
       script << "insert #{i} user#{i} person#{i}@example.com"
     end
 
