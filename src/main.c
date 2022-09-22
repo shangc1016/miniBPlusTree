@@ -107,8 +107,16 @@ const uint8_t COMMON_NODE_HEADER_SIZE =
 const uint32_t LEAF_NODE_NUM_CELLS_SIZE =
     sizeof(uint32_t);  // 叶节点cells，就是一个node存储的数据条数
 const uint32_t LEAF_NODE_NUM_CELLS_OFFSET = COMMON_NODE_HEADER_SIZE;
-const uint32_t LEAF_NODE_HEADER_SIZE =
-    COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE;
+// const uint32_t LEAF_NODE_HEADER_SIZE =
+//     COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE;
+// 指向下一个叶子结点的指针
+const uint32_t LEAF_NODE_NEXT_LEAF_SIZE = sizeof(uint32_t);
+const uint32_t LEAF_NODE_NEXT_LEAF_OFFSET =
+    LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NEXT_LEAF_SIZE;
+// 叶子结点包含两个而外的元数据：本节点的记录条数、指向下一个叶子结点的指针
+const uint32_t LEAF_NODE_HEADER_SIZE = COMMON_NODE_HEADER_SIZE +
+                                       LEAF_NODE_NUM_CELLS_SIZE +
+                                       LEAF_NODE_NEXT_LEAF_SIZE;
 
 // leaf node body layout
 const uint32_t LEAF_NODE_KEY_SIZE = sizeof(uint32_t);
@@ -144,6 +152,12 @@ const uint32_t INTERNAL_NODE_KEY_SIZE = sizeof(uint32_t);
 const uint32_t INTERNAL_NODE_CHILD_SIZE = sizeof(uint32_t);
 const uint32_t INTERNAL_NODE_CELL_SIZE =
     INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;
+
+const uint32_t INTERNAL_NODE_SPACE_FOR_CELLS =
+    PAGE_SIZE - INTERNAL_NODE_HEADER_SIZE;
+const uint32_t INTERNAL_NODE_CELLS_NUM =
+    INTERNAL_NODE_SPACE_FOR_CELLS / INTERNAL_NODE_CELL_SIZE;
+
 // num_keys和right_child合起来是internal_node的元数据
 // 真正指向叶子结点的指针是internal_node_cell，每个cell包含一个key、一个指向子节点的指针
 // INTERNAL_NODE_HEADER_SIZE大小：14B，INTERNAL_NODE_CELL_SIZE大小：8B，
@@ -216,6 +230,10 @@ void create_new_root(Table *table, uint32_t right_child_page_num);
 
 // part8，访问key、value以及元数据都需要用到上面定义好的宏，以及指针算术运算
 // 返回这个node节点的cell数据条数，根据指针运算，node地址加上CELLS的偏移
+uint32_t *leaf_node_next_leaf(void *node) {
+  return node + LEAF_NODE_NEXT_LEAF_OFFSET;
+}
+
 uint32_t *leaf_node_num_cells(void *node) {
   return node + LEAF_NODE_NUM_CELLS_OFFSET;
 }
@@ -237,6 +255,8 @@ void initialize_leaf_node(void *node) {
   // 设置节点，不为根节点
   set_node_root(node, false);
   set_node_type(node, NODE_LEAF);
+  // 设置下一个叶子结点的指针为0
+  *leaf_node_next_leaf(node) = 0;
 }
 void initialize_internal_node(void *node) {
   set_node_type(node, NODE_INTERNAL);
@@ -344,7 +364,7 @@ void deserialize_row(void *source, Row *destination) {
 // 返回pager中的第几页地址
 void *get_page(Pager *pager, uint32_t page_num) {
   if (page_num > TABLE_MAX_PAGES) {
-    printf("Tried tyo fetch page number out of bounds. %d -> %d\n", page_num,
+    printf("Tried to fetch page number out of bounds. %d -> %d\n", page_num,
            TABLE_MAX_PAGES);
     exit(EXIT_FAILURE);
   }
@@ -402,8 +422,18 @@ void cursor_advance(Cursor *cursor) {
   void *node = get_page(cursor->table->pager, page_num);
 
   cursor->cell_num +=1;
+  // cursor到达节点的最后，跳转到新的叶子结点
   if(cursor->cell_num >= (*leaf_node_num_cells(node))){
-    cursor->end_of_table = true;
+    // 设置cursor到下一个叶子结点
+    uint32_t next_page_num = *leaf_node_next_leaf(node);
+    if (next_page_num != 0) {
+      // 如果还有下一个叶子结点，那么直接设置cursor的页号为下一个叶子结点
+      cursor->page_num = next_page_num;
+      cursor->cell_num = 0;
+    } else {
+      // 否则遍历到节点末尾，结束
+      cursor->end_of_table = true;
+    }
   }
 }
 
@@ -704,6 +734,7 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 1、分配一个新的叶子结点，把一般的数据拷贝到新的叶子节点中
   // 2、把当前的K-V记录,插入新旧两个叶子节点中的一个
   // 3、更新两个叶子节点的父子关系
+  printf("==split\n");
 
   void *old_node = get_page(cursor->table->pager, cursor->page_num);
   // 直接返回pager的page数量，此时pager中这个page未分配，就会在get_page中分配新的页面
@@ -711,6 +742,10 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   void *new_node = get_page(cursor->table->pager, new_page_num);
   // 初始化叶子结点，
   initialize_leaf_node(new_node);
+  // 设置叶子结点的下一个指针，相当于链表插入，新节点在原来的节点之后
+  *leaf_node_next_leaf(new_node) = *leaf_node_next_leaf(old_node);
+  // 并不是指针，而是节点号
+  *leaf_node_next_leaf(old_node) = new_page_num;
 
   // 需要考虑的数据包括这个叶子结点的全部数据以及即将插入的这个数据
   // 要把这些数据分成两部分，其中的一部分拷贝到新的叶子节点上
@@ -729,8 +764,10 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
     // 下面这么memcpy的话，岂不是old_page的也要拷贝一遍？
     if (i == cursor->cell_num) {
       // 如果这条数据是即将插入的数据，直接序列化到指定位置
-      serialize_row(value, destination);
-      // cursor->cell_num 指向了当前要插入数据的位置
+      // serialize_row(value, destination);
+      serialize_row(value,
+                    leaf_node_value(destination_node, index_within_node));
+      *leaf_node_key(destination_node, index_within_node) = key;
     } else if (i > cursor->cell_num) {
       // 后半段数据?
       memcpy(destination, leaf_node_cell(old_node, i - 1), LEAF_NODE_CELL_SIZE);
@@ -894,11 +931,12 @@ void db_close(Table *table) {
 // 创建cursor指向table头
 Cursor *table_start(Table *table) {
   // 让cursor指向key为0的一条记录
-  // key不能呢过小于0，所以0肯定是表的第一行
+  // key不能小于0，所以0肯定是表的第一行
   Cursor *cursor = table_find(table, 0);
 
-  // 拿到游标指向的那一个页面
+  // 拿到游标指向的那一个页面，肯定就是第一页
   void *node = get_page(table->pager, cursor->page_num);
+  // 计算得到第一个叶子结点的记录条数
   uint32_t num_cells = *leaf_node_num_cells(node);
   cursor->end_of_table = (num_cells == 0);
   return cursor;

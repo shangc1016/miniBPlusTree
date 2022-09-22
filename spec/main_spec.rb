@@ -156,7 +156,7 @@ describe 'database' do
 
   # part11  
   it 'allows printing out the structure of 3-level-node-btree' do
-    script = (1..14).map do | i |
+    script = (1..1400).map do | i |
     "insert #{i} user#{i} person#{i}@example.com"
     end
   
@@ -167,30 +167,71 @@ describe 'database' do
 
     # puts result
 
-    expect(result[14...(result.length)]).to match_array([
-      "db > Tree:",
-      "- internal (size 1)",
-      "  - leaf (size 7)",
-      "    - 1",
-      "    - 2",
-      "    - 3",
-      "    - 4",
-      "    - 5",
-      "    - 6",
-      "    - 7",
-      "  - key 7",
-      "  - leaf (size 7)",
-      "    - 8",
-      "    - 9",
-      "    - 10",
-      "    - 11",
-      "    - 12",
-      "    - 13",
-      "    - 14",
-      "db > Executed.",
-      "db > "
-    ])
+    # expect(result[14...(result.length)]).to match_array([
+    #   "db > Tree:",
+    #   "- internal (size 1)",
+    #   "  - leaf (size 7)",
+    #   "    - 1",
+    #   "    - 2",
+    #   "    - 3",
+    #   "    - 4",
+    #   "    - 5",
+    #   "    - 6",
+    #   "    - 7",
+    #   "  - key 7",
+    #   "  - leaf (size 7)",
+    #   "    - 8",
+    #   "    - 9",
+    #   "    - 10",
+    #   "    - 11",
+    #   "    - 12",
+    #   "    - 13",
+    #   "    - 14",
+    #   "db > Executed.",
+    #   "db > "
+    # ])
   end
+
+
+
+  # part12
+  # ruby中`..`、`...`生成范围，区别在于两个点包含上下界、三个点不包含上界
+  it 'prints all rows in a multi-level tree' do
+    script = []
+    (1..21).each do |i|
+      script << "insert #{i} user#{i} person#{i}@example.com"
+    end
+
+    script << "select"
+    # script << ".btree
+    script << ".exit"
+    result = run_script(script)
+
+    puts result
+
+    # expect(result[15...result.length]).to match_array([
+    #   "db > (1, user1, person1@example.com)",
+    #   "(2, user2, person2@example.com)",
+    #   "(3, user3, person3@example.com)",
+    #   "(4, user4, person4@example.com)",
+    #   "(5, user5, person5@example.com)",
+    #   "(6, user6, person6@example.com)",
+    #   "(7, user7, person7@example.com)",
+    #   "(8, user8, person8@example.com)",
+    #   "(9, user9, person9@example.com)",
+    #   "(10, user10, person10@example.com)",
+    #   "(11, user11, person11@example.com)",
+    #   "(12, user12, person12@example.com)",
+    #   "(13, user13, person13@example.com)",
+    #   "(14, user14, person14@example.com)",
+    #   "(15, user15, person15@example.com)",
+    #   "Executed.",
+    #   "db > ",
+    # ])
+    end
+
+
+   
 
 
 end

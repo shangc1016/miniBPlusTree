@@ -2,27 +2,48 @@
 
 
 
-part11  
-
-在上一小节中，B+树实现了叶子结点的split以及叶子结点生成三个节点、包含内部节点的B+树。但是这个B+树不能插入，原因是get_page找到插入位置的时候，不能处理内部节点。
-
-1、首先实现设置插入游标的时候，可以处理内部节点。根据内部节点记录的各个子树的最大key值判断应该递归到哪个子树中查找插入位置。  
-2、完成之后，可以在多个节点的B+树上插入数据了，但是select查询数据还不可以。因为select是根据叶子结点的记录长度来遍历的。
-
-> 插入15条数据，然后select。发现打印错误。原因是错误的把内部节点当做叶子结点，把内部节点的子节点数量当做叶子结点的记录条数(这两个字段的相对偏移一样)。然后当做表中只有一个叶子结点。把内部节点当做叶子结点，（因为前面create_new_root的时候，根节点的数据拷贝到了left child，所以root节点仍然保留了原来的数据。）总之就是table_start把内部节点当做叶子结点了。
-
-<img src="https://note-img-1300721153.cos.ap-nanjing.myqcloud.com/md-imgimage-20220922155723330.png" alt="image-20220922155723330" style="zoom: 33%;" />
+part12
 
 
+在本小节，实现select语句查询整个数据库，在part11中，select数据只能得到一个叶子结点的数据，这部分实现遍历整个B+树。
+
+
+在本节中，通过修改table_start函数，使得游标指向第一个叶子结点，然后测试只能打印第一个叶子结点的7条记录，
+
+```c
+// 创建cursor指向table头
+Cursor *table_start(Table *table) {
+  // 让cursor指向key为0的一条记录
+  // key不能小于0，所以0肯定是表的第一行
+  Cursor *cursor = table_find(table, 0);
+
+  // 拿到游标指向的那一个页面，肯定就是第一页
+  void *node = get_page(table->pager, cursor->page_num);
+  // 计算得到第一个叶子结点的记录条数
+  uint32_t num_cells = *leaf_node_num_cells(node);
+  cursor->end_of_table = (num_cells == 0);
+  return cursor;
+}
+```
+
+为了能实现叶子结点可以串起来，在叶子结点的page中增加一个字段next_leaf指针，指向下一块叶子结点、
+
+```
+
+            root_node
+             /     \
+            /       \
+           /         \
+          /           \
+         /             \
+    leaf1   ------>   leaf2
+           (next_leaf)
+```
 
 
 
-
-
-
-
-
-
+          
+           
 
 
 
