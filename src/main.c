@@ -274,7 +274,9 @@ void indent(uint32_t level) {
     printf("  ");
   }
 }
-
+// part10中，只能指支持一个内部节点，两个叶子结点；
+// 在本节中，以及支持插入的时候多个内部节点了，
+// 这儿需要改进
 void print_tree(Pager *pager, uint32_t page_num, uint32_t indentation_level) {
   void *node = get_page(pager, page_num);
   uint32_t num_keys, child;
@@ -531,7 +533,11 @@ ExecuteResult execute_insert(Statement *statement, Table *table) {
   // B+树的根节点也就是叶子结点。所以这儿直接得到root_page，就是唯一的page
   // get_page 会把分配的这一页page放到自己的缓存之中，缓存的数据结构是指针数组
   void *node = get_page(table->pager, table->root_page_num);
+
   // 此节点的数据条数
+  // 在part10中，如果节点满了，叶子结点分裂成两个，根节点变成内部节点。
+  // 但是这儿的leaf_ndoe_num_cells仍然把这个内部节点当做叶子结点，
+  // 所以说，此时还不能对内部节点插入数据。
   uint32_t num_cells = *leaf_node_num_cells(node);
 
   // 要插入的一条数据
@@ -887,18 +893,31 @@ void db_close(Table *table) {
 //
 // 创建cursor指向table头
 Cursor *table_start(Table *table) {
-  Cursor *cursor = malloc(sizeof(Cursor));
-  cursor->table = table;
-  cursor->page_num = table->root_page_num;  // 初始化cursor的page_num
-  cursor->cell_num = 0;  // 设置cursor的cell为0，即指向node的第一条记录
+  // 让cursor指向key为0的一条记录
+  // key不能呢过小于0，所以0肯定是表的第一行
+  Cursor *cursor = table_find(table, 0);
 
-  //
-  void *root_node = get_page(table->pager, table->root_page_num);
-  uint32_t num_cells = *leaf_node_num_cells(root_node);
+  // 拿到游标指向的那一个页面
+  void *node = get_page(table->pager, cursor->page_num);
+  uint32_t num_cells = *leaf_node_num_cells(node);
   cursor->end_of_table = (num_cells == 0);
-
   return cursor;
 }
+
+// Cursor *table_start(Table *table) {
+//   table_find()
+//   Cursor *cursor = malloc(sizeof(Cursor));
+//   cursor->table = table;
+//   cursor->page_num = table->root_page_num;  // 初始化cursor的page_num
+//   cursor->cell_num = 0;  // 设置cursor的cell为0，即指向node的第一条记录
+
+//   //
+//   void *root_node = get_page(table->pager, table->root_page_num);
+//   uint32_t num_cells = *leaf_node_num_cells(root_node);
+//   cursor->end_of_table = (num_cells == 0);
+
+//   return cursor;
+// }
 // 游标cursor指向数据库表的末尾
 // Cursor *table_end(Table *table) {
 //   Cursor *cursor = malloc(sizeof(Cursor));
@@ -913,6 +932,40 @@ Cursor *table_start(Table *table) {
 //   return cursor;
 // }
 
+Cursor *internal_node_find(Table *table, uint32_t page_num, uint32_t key) {
+  // 先得到这个数据库表的根节点
+  void *node = get_page(table->pager, page_num);
+  // 得到这个根节点的key数量
+  uint32_t num_keys = *internal_node_num_keys(node);
+  // 挨个遍历内部节点的这些key，判断。
+  // 如果key <= 哪一个key，就继续往下搜索这个子节点
+
+  // 二分查找
+  uint32_t min_index = 0;
+  uint32_t max_index = num_keys;  // 这个下标比key多一个
+  while (min_index != max_index) {
+    uint32_t index = (min_index + max_index) / 2;
+    // mid下标，在internal node中的key值
+    uint32_t key_to_right = *internal_node_key(node, index);
+    if (key <= key_to_right) {
+      max_index = index;
+    } else {
+      min_index = index + 1;
+    }
+  }
+  // 上面二分查找找到了key值所在的位置：min_index
+  // 得到这个子节点的记录条数量
+  uint32_t child_num = *internal_node_child(node, min_index);
+  void *child = get_page(table->pager, child_num);
+  // 子节点也有可能是内部节点
+  switch (get_node_type(child)) {
+    case NODE_LEAF:
+      return leaf_node_find(table, child_num, key);
+    case NODE_INTERNAL:
+      return internal_node_find(table, child_num, key);
+  }
+}
+
 // 根据数据库表中的key设置游标
 // 在数据库表中查key值，设置cursor指向此处
 Cursor *table_find(Table *table, uint32_t key) {
@@ -924,8 +977,8 @@ Cursor *table_find(Table *table, uint32_t key) {
     // 在这个node中根据key值查找记录，返回游标
     return leaf_node_find(table, root_page_num, key);
   } else {
-    printf("Need to implement searching an internal node\n");
-    exit(EXIT_FAILURE);
+    // 在内部节点中，根据key值得到数据库表中的cursor
+    return internal_node_find(table, root_page_num, key);
   }
 }
 

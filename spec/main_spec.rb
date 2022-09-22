@@ -10,7 +10,12 @@ describe 'database' do
     raw_output = nil
     IO.popen("./src/db src/test.db", "r+") do |pipe|
       commands.each do |command|
-        pipe.puts command
+        # pipe.puts command
+        begin
+          pipe.puts command
+        rescue Errno::EPIPE
+          break
+        end
       end
 
       pipe.close_write
@@ -148,6 +153,8 @@ describe 'database' do
     ])
   end
 
+
+  # part11  
   it 'allows printing out the structure of 3-level-node-btree' do
     script = (1..14).map do | i |
     "insert #{i} user#{i} person#{i}@example.com"
@@ -158,31 +165,32 @@ describe 'database' do
     script << ".exit"
     result = run_script(script)
 
-    puts result
+    # puts result
 
-
-    # expect(result[14...(result.length)]).to match_array([
-    #   "db > Tree:",
-    #   "- internal (size 1)",
-    #   "  - leaf (size 7)",
-    #   "    - 1",
-    #   "    - 2",
-    #   "    - 3",
-    #   "    - 4",
-    #   "    - 5",
-    #   "    - 6",
-    #   "    - 7",
-    #   "  - key 7",
-    #   "  - leaf (size 7)",
-    #   "    - 8",
-    #   "    - 9",
-    #   "    - 10",
-    #   "    - 11",
-    #   "    - 12",
-    #   "    - 13",
-    #   "    - 14",
-    #   "db > Need to implement searching an internal node",
-    # ])
+    expect(result[14...(result.length)]).to match_array([
+      "db > Tree:",
+      "- internal (size 1)",
+      "  - leaf (size 7)",
+      "    - 1",
+      "    - 2",
+      "    - 3",
+      "    - 4",
+      "    - 5",
+      "    - 6",
+      "    - 7",
+      "  - key 7",
+      "  - leaf (size 7)",
+      "    - 8",
+      "    - 9",
+      "    - 10",
+      "    - 11",
+      "    - 12",
+      "    - 13",
+      "    - 14",
+      "db > Executed.",
+      "db > "
+    ])
   end
+
 
 end
