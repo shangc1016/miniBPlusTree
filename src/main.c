@@ -421,6 +421,9 @@ void cursor_advance(Cursor *cursor) {
   uint32_t page_num = cursor->page_num;
   void *node = get_page(cursor->table->pager, page_num);
 
+  printf("[cursora_advance] cursor->page_num = %d\tcursor->cell_num=%d\n",
+         cursor->page_num, cursor->cell_num);
+
   cursor->cell_num +=1;
   // cursor到达节点的最后，跳转到新的叶子结点
   if(cursor->cell_num >= (*leaf_node_num_cells(node))){
@@ -543,6 +546,8 @@ ExecuteResult execute_select(Statement *statement, Table *table) {
   // 先把游标设置为文件开头
   Cursor *cursor = table_start(table);
 
+  printf("page_num = %d, cell_num = %d\n", cursor->page_num, cursor->cell_num);
+
   while (!(cursor->end_of_table)) {
     // 把游标位置的一行数据反序列化到row
     deserialize_row(cursor_value(cursor), &row);
@@ -592,7 +597,6 @@ ExecuteResult execute_insert(Statement *statement, Table *table) {
     }
   }
 
-  // printf("==%u, %u\n", cursor->page_num, cursor->cell_num);
   // 然后把数据写到这一行，覆盖掉原来的数据
   leaf_node_insert(cursor, row_to_insert->id, row_to_insert);
   // 释放掉cursor空间
@@ -734,7 +738,6 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 1、分配一个新的叶子结点，把一般的数据拷贝到新的叶子节点中
   // 2、把当前的K-V记录,插入新旧两个叶子节点中的一个
   // 3、更新两个叶子节点的父子关系
-  printf("==split\n");
 
   void *old_node = get_page(cursor->table->pager, cursor->page_num);
   // 直接返回pager的page数量，此时pager中这个page未分配，就会在get_page中分配新的页面
@@ -789,6 +792,7 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
     return create_new_root(cursor->table, new_page_num);
   } else {
     // TODO：非根节点的情况暂不考虑
+    // 在现在硬编码的情况下，一个数据库表最多对应的B+树的深度也就是2，所以不存在这种情况。
     printf("Need to implement updating parent after split\n");
     exit(EXIT_FAILURE);
   }
@@ -802,9 +806,9 @@ void create_new_root(Table *table, uint32_t right_child_page_num) {
   //
   void *root = get_page(table->pager, table->root_page_num);
   void *right_child = get_page(table->pager, right_child_page_num);
-
   // 分配了左孩子节点，left child应该是新分配的节点
   uint32_t left_child_page_num = get_unused_page_num(table->pager);
+  // 这个left_child是新分配的，
   void *left_child = get_page(table->pager, left_child_page_num);
 
   // 把root节点的数据拷贝到左孩子节点
