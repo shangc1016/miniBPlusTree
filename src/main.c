@@ -153,6 +153,9 @@ const uint32_t INTERNAL_NODE_CHILD_SIZE = sizeof(uint32_t);
 const uint32_t INTERNAL_NODE_CELL_SIZE =
     INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;
 
+// 设置内部节点最多有三个子节点?为啥设置这么少
+const uint32_t INTERNAL_NODE_MAX_CELLS = 3;
+
 const uint32_t INTERNAL_NODE_SPACE_FOR_CELLS =
     PAGE_SIZE - INTERNAL_NODE_HEADER_SIZE;
 const uint32_t INTERNAL_NODE_CELLS_NUM =
@@ -226,6 +229,8 @@ void indent(uint32_t level);
 void print_tree(Pager *pager, uint32_t page_num, uint32_t indentation_level);
 uint32_t get_unused_page_num(Pager *pager);
 void create_new_root(Table *table, uint32_t right_child_page_num);
+
+uint32_t internal_node_find_child(void *node, uint32_t key);
 // function declaration end =========================
 
 // part8，访问key、value以及元数据都需要用到上面定义好的宏，以及指针算术运算
@@ -421,9 +426,6 @@ void cursor_advance(Cursor *cursor) {
   uint32_t page_num = cursor->page_num;
   void *node = get_page(cursor->table->pager, page_num);
 
-  printf("[cursora_advance] cursor->page_num = %d\tcursor->cell_num=%d\n",
-         cursor->page_num, cursor->cell_num);
-
   cursor->cell_num +=1;
   // cursor到达节点的最后，跳转到新的叶子结点
   if(cursor->cell_num >= (*leaf_node_num_cells(node))){
@@ -545,8 +547,6 @@ ExecuteResult execute_select(Statement *statement, Table *table) {
   Row row;
   // 先把游标设置为文件开头
   Cursor *cursor = table_start(table);
-
-  printf("page_num = %d, cell_num = %d\n", cursor->page_num, cursor->cell_num);
 
   while (!(cursor->end_of_table)) {
     // 把游标位置的一行数据反序列化到row
@@ -733,6 +733,57 @@ void set_node_root(void *node, bool is_root) {
   *(uint8_t *)(node + IS_ROOT_OFFSET) = value;
 }
 
+// B+树中节点的父指针
+uint32_t *node_parent(void *node) { return node + PARENT_POINTER_OFFSET; }
+
+// 修改内部节点中，指向某个子节点的key
+void update_internal_node_key(void *node, uint32_t old_key, uint32_t new_key) {
+  uint32_t old_child_index = internal_node_find_child(node, old_key);
+  *internal_node_key(node, old_child_index) = new_key;
+}
+
+// 关键的函数，指定了B+树中的父子节点索引，根据子节点中的最大key值确定插入位置。
+void internal_node_insert(Table *table, uint32_t parent_page_num,
+                          uint32_t child_page_num) {
+  void *parent = get_page(table->pager, parent_page_num);
+  void *child = get_page(table->pager, child_page_num);
+  uint32_t child_max_key = get_node_max_key(child);
+  // 根据child节点的key，找到child节点的插入位置index
+  uint32_t index = internal_node_find_child(parent, child_max_key);
+  // 原来parent节点的子节点个数
+  uint32_t original_num_keys = *internal_node_num_keys(parent);
+  *internal_node_num_keys(parent) = original_num_keys + 1;
+
+  // 内部节点的子节点树，已经装满了
+  if (original_num_keys >= INTERNAL_NODE_MAX_CELLS) {
+    printf("Need to implement splitting internal node\n");
+    exit(EXIT_FAILURE);
+  }
+
+  // 为啥B+树中的内部节点要单独设置一个right child ?，导致很多麻烦
+  uint32_t right_child_page_num = *internal_node_right_child(parent);
+  void *right_child = get_page(table->pager, right_child_page_num);
+  // 如果要插入的这个叶子结点，比原来内部节点中做右侧的树的key还大
+  if (child_max_key > get_node_max_key(right_child)) {
+    // 要插入节点的最大key比原来的最右节点的key还大，县坝上最右节点放在左侧，然后把要插入的节点放在最右；
+    *internal_node_child(parent, original_num_keys) = right_child_page_num;
+    *internal_node_key(parent, original_num_keys) =
+        get_node_max_key(right_child);
+    *internal_node_right_child(parent) = child_page_num;
+  } else {
+    // 为新插入的子节点腾出位置
+    // 挨个往后挪一个位置
+    for (uint32_t i = original_num_keys; i > index; i--) {
+      void *destination = internal_node_cell(parent, i);
+      void *source = internal_node_cell(parent, i - 1);
+      memcpy(destination, source, INTERNAL_NODE_CELL_SIZE);
+    }
+    // 最后空出来的位置，把要插入的子节点写入到这个位置
+    *internal_node_child(parent, index) = child_page_num;
+    *internal_node_key(parent, index) = child_max_key;
+  }
+}
+
 // 叶子结点的分裂算法
 void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 1、分配一个新的叶子结点，把一般的数据拷贝到新的叶子节点中
@@ -740,11 +791,14 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   // 3、更新两个叶子节点的父子关系
 
   void *old_node = get_page(cursor->table->pager, cursor->page_num);
+  uint32_t old_max = get_node_max_key(old_node);
   // 直接返回pager的page数量，此时pager中这个page未分配，就会在get_page中分配新的页面
   uint32_t new_page_num = get_unused_page_num(cursor->table->pager);
   void *new_node = get_page(cursor->table->pager, new_page_num);
   // 初始化叶子结点，
   initialize_leaf_node(new_node);
+  *node_parent(new_node) = *node_parent(old_node);
+
   // 设置叶子结点的下一个指针，相当于链表插入，新节点在原来的节点之后
   *leaf_node_next_leaf(new_node) = *leaf_node_next_leaf(old_node);
   // 并不是指针，而是节点号
@@ -793,8 +847,14 @@ void leaf_node_split_and_insert(Cursor *cursor, uint32_t key, Row *value) {
   } else {
     // TODO：非根节点的情况暂不考虑
     // 在现在硬编码的情况下，一个数据库表最多对应的B+树的深度也就是2，所以不存在这种情况。
-    printf("Need to implement updating parent after split\n");
-    exit(EXIT_FAILURE);
+    // printf("Need to implement updating parent after split\n");
+    // exit(EXIT_FAILURE);
+    uint32_t parent_page_num = *node_parent(old_node);
+    uint32_t new_max = get_node_max_key(old_node);
+    void *parent = get_page(cursor->table->pager, parent_page_num);
+    update_internal_node_key(parent, old_max, new_max);
+    internal_node_insert(cursor->table, parent_page_num, new_page_num);
+    return;
   }
 }
 
@@ -836,6 +896,8 @@ void create_new_root(Table *table, uint32_t right_child_page_num) {
   *internal_node_key(root, 0) = left_child_max_key;
   // 同样的方法，设置root的右孩子节点，只需要设置page_num。
   *internal_node_right_child(root) = right_child_page_num;
+  *node_parent(left_child) = table->root_page_num;
+  *node_parent(right_child) = table->root_page_num;
 }
 
 // pager是数据库在内存中的缓存，用的数据结构是指针数组，
@@ -974,32 +1036,32 @@ Cursor *table_start(Table *table) {
 //   return cursor;
 // }
 
-Cursor *internal_node_find(Table *table, uint32_t page_num, uint32_t key) {
-  // 先得到这个数据库表的根节点
-  void *node = get_page(table->pager, page_num);
-  // 得到这个根节点的key数量
+uint32_t internal_node_find_child(void *node, uint32_t key) {
+  // 根据内部节点，以及子节点的key，返回子节点的索引
   uint32_t num_keys = *internal_node_num_keys(node);
-  // 挨个遍历内部节点的这些key，判断。
-  // 如果key <= 哪一个key，就继续往下搜索这个子节点
-
-  // 二分查找
+  // 二分查找key，
   uint32_t min_index = 0;
-  uint32_t max_index = num_keys;  // 这个下标比key多一个
+  uint32_t max_index = num_keys;  // 比最大索引大1
   while (min_index != max_index) {
     uint32_t index = (min_index + max_index) / 2;
-    // mid下标，在internal node中的key值
-    uint32_t key_to_right = *internal_node_key(node, index);
-    if (key <= key_to_right) {
+    uint32_t key_to_right = *internal_node_key(node, key);
+    if (key_to_right >= key) {
       max_index = index;
     } else {
       min_index = index + 1;
     }
   }
-  // 上面二分查找找到了key值所在的位置：min_index
-  // 得到这个子节点的记录条数量
-  uint32_t child_num = *internal_node_child(node, min_index);
+  return min_index;
+}
+
+Cursor *internal_node_find(Table *table, uint32_t page_num, uint32_t key) {
+  // 先得到这个数据库表的根节点
+  void *node = get_page(table->pager, page_num);
+
+  uint32_t child_index = internal_node_find_child(node, key);
+  uint32_t child_num = *internal_node_child(node, child_index);
   void *child = get_page(table->pager, child_num);
-  // 子节点也有可能是内部节点
+
   switch (get_node_type(child)) {
     case NODE_LEAF:
       return leaf_node_find(table, child_num, key);
